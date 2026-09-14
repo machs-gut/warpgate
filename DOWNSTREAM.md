@@ -46,3 +46,5 @@ Rebase each downstream release onto an explicit upstream Warpgate tag. Keep down
 - Metrics stay scoped to the active target session. Switching server tabs switches the metrics rail with it; background sessions retain only their own 60-sample browser history.
 - Multiple shell channels on one server remain supported and appear as a small secondary shell strip only when more than one channel exists.
 - Sidebar, metrics-rail, terminal-theme, and font-size preferences are browser-local; workspace target sessions are intentionally not persisted across page reloads.
+
+- Web SSH buffers up to 1 MiB of early terminal output per shell channel until the xterm instance is mounted, then flushes and refits it; this prevents fast remote login banners/prompts from being lost during workspace session creation.

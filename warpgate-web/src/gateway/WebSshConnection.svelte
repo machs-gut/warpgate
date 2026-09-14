@@ -100,6 +100,11 @@
         { type: 'host_key_unknown' }
     > | null = $state(null)
     const tabs: Record<string, SshTerminalTab> = {}
+    const pendingOutput = new Map<
+        string,
+        { chunks: Uint8Array[]; bytes: number }
+    >()
+    const MAX_PENDING_OUTPUT_BYTES = 1024 * 1024
 
     let metricsStatus = $state<MetricsStatus>('starting')
     let metricsStatusMessage = $state<string | null>(null)
@@ -150,7 +155,8 @@
                 openChannel(msg.channel_id)
                 break
             case 'output':
-                tabs[msg.channel_id]?.write(
+                writeTerminalOutput(
+                    msg.channel_id,
                     Uint8Array.from(atob(msg.data), c => c.charCodeAt(0)),
                 )
                 break
@@ -163,7 +169,8 @@
             case 'exit_status': {
                 const ch = channels.get(msg.channel_id)
                 if (ch) {
-                    tabs[msg.channel_id]?.write(
+                    writeTerminalOutput(
+                        msg.channel_id,
                         Uint8Array.from(
                             `\r\n[Process exited with code ${msg.code}]\r\n`,
                             c => c.charCodeAt(0),
@@ -194,7 +201,35 @@
         }
     }
 
-    function openChannel(id: string) {
+    function writeTerminalOutput(id: string, data: Uint8Array) {
+        const tab = tabs[id]
+        if (tab) {
+            tab.write(data)
+            return
+        }
+
+        const backlog = pendingOutput.get(id) ?? { chunks: [], bytes: 0 }
+        backlog.chunks.push(data)
+        backlog.bytes += data.byteLength
+        while (
+            backlog.bytes > MAX_PENDING_OUTPUT_BYTES &&
+            backlog.chunks.length > 1
+        ) {
+            const dropped = backlog.chunks.shift()
+            if (dropped) backlog.bytes -= dropped.byteLength
+        }
+        pendingOutput.set(id, backlog)
+    }
+
+    function flushTerminalOutput(id: string) {
+        const tab = tabs[id]
+        const backlog = pendingOutput.get(id)
+        if (!tab || !backlog) return
+        for (const chunk of backlog.chunks) tab.write(chunk)
+        pendingOutput.delete(id)
+    }
+
+    async function openChannel(id: string) {
         channels.set(id, {
             id,
             label: `Shell ${channelOrder.length + 1}`,
@@ -203,6 +238,12 @@
         })
         channelOrder = [...channelOrder, id]
         activeChannelId = id
+
+        await tick()
+        requestAnimationFrame(() => {
+            flushTerminalOutput(id)
+            tabs[id]?.fit()
+        })
     }
 
     async function switchToChannel(id: string) {
@@ -214,6 +255,7 @@
     function closeChannel(id: string) {
         send({ type: 'close_channel', channel_id: id })
         channels.delete(id)
+        pendingOutput.delete(id)
         channelOrder = channelOrder.filter(x => x !== id)
         if (activeChannelId === id) {
             activeChannelId = channelOrder[channelOrder.length - 1] ?? null
@@ -237,7 +279,9 @@
     }
 
     export function fit(): void {
-        if (activeChannelId) tabs[activeChannelId]?.fit()
+        if (!activeChannelId) return
+        flushTerminalOutput(activeChannelId)
+        tabs[activeChannelId]?.fit()
     }
 
     export async function disconnect(): Promise<void> {
