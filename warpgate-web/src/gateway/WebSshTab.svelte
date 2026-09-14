@@ -1,28 +1,3 @@
-<script lang="ts" module>
-    export const THEME = {
-        foreground: '#cacaca',
-        background: '#171717',
-        cursor: '#bbbbbb',
-        colors: [
-            '#000000',
-            '#ff615a',
-            '#b1e969',
-            '#ebd99c',
-            '#5da9f6',
-            '#e86aff',
-            '#82fff7',
-            '#dedacf',
-            '#313131',
-            '#f58c80',
-            '#ddf88f',
-            '#eee5b2',
-            '#a5c7ff',
-            '#ddaaff',
-            '#b7fff9',
-            '#ffffff',
-        ],
-    }
-</script>
 <script lang="ts">
     import {
         Button,
@@ -35,6 +10,7 @@
     import { Terminal } from '@xterm/xterm'
     import { onDestroy } from 'svelte'
     import * as Zmodem from 'zmodem.js'
+    import { type TerminalTheme, toXtermTheme } from './WebSshThemes'
 
     enum ZmodemFeedResult {
         Consumed = 'consumed',
@@ -221,6 +197,7 @@
     interface Props {
         active: boolean
         fontSize: number
+        theme: TerminalTheme
         readOnly: boolean
         onInput: (data: Uint8Array) => void
         onResize: (cols: number, rows: number) => void
@@ -230,6 +207,7 @@
     let {
         active,
         fontSize,
+        theme,
         readOnly,
         onInput,
         onResize,
@@ -239,28 +217,8 @@
     const terminal = new Terminal({
         allowProposedApi: true,
         cursorBlink: true,
-        theme: {
-            foreground: THEME.foreground,
-            background: THEME.background,
-            cursor: THEME.cursor,
-            black: THEME.colors[0],
-            red: THEME.colors[1],
-            green: THEME.colors[2],
-            yellow: THEME.colors[3],
-            blue: THEME.colors[4],
-            magenta: THEME.colors[5],
-            cyan: THEME.colors[6],
-            white: THEME.colors[7],
-            brightBlack: THEME.colors[8],
-            brightRed: THEME.colors[9],
-            brightGreen: THEME.colors[10],
-            brightYellow: THEME.colors[11],
-            brightBlue: THEME.colors[12],
-            brightMagenta: THEME.colors[13],
-            brightCyan: THEME.colors[14],
-            brightWhite: THEME.colors[15],
-        },
-        fontFamily: 'monospace-fallback, monospace',
+        fontFamily:
+            "'JetBrains Mono', 'Cascadia Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
     })
 
     const fitAddon = new FitAddon()
@@ -283,6 +241,10 @@
         terminal.options.fontSize = fontSize
         fitAddon.fit()
         onResize(terminal.cols, terminal.rows)
+    })
+
+    $effect(() => {
+        terminal.options.theme = toXtermTheme(theme)
     })
 
     $effect(() => {

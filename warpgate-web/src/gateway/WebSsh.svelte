@@ -27,7 +27,14 @@
         ConnectionState,
         ReconnectingWebSocket,
     } from './lib/ReconnectingWebSocket.svelte'
-    import SshTerminalTab, { THEME } from './WebSshTab.svelte'
+    import WebSshMetrics from './WebSshMetrics.svelte'
+    import SshTerminalTab from './WebSshTab.svelte'
+    import {
+        DEFAULT_TERMINAL_THEME,
+        isTerminalThemeName,
+        TERMINAL_THEMES,
+        type TerminalThemeName,
+    } from './WebSshThemes'
 
     interface Props {
         params: { sessionId: string }
@@ -41,6 +48,23 @@
         | { type: 'close_channel'; channel_id: string }
         | { type: 'accept_host_key' }
         | { type: 'reject_host_key' }
+        | { type: 'start_metrics' }
+        | { type: 'stop_metrics' }
+
+    type MetricsStatus = 'starting' | 'available' | 'unavailable' | 'disabled'
+
+    interface MetricsSnapshot {
+        cpu_percent: number | null
+        cpu_count: number
+        memory_used_bytes: number
+        memory_total_bytes: number
+        load1: number
+        rx_bytes_per_sec: number | null
+        tx_bytes_per_sec: number | null
+        network_interface: string | null
+        disk_percent: number
+        uptime_seconds: number
+    }
 
     type ServerMessage =
         | { type: 'connection_state'; state: ConnectionState }
@@ -57,6 +81,12 @@
               key_type: string
               key_base64: string
           }
+        | {
+              type: 'metrics_status'
+              state: MetricsStatus
+              message: string | null
+          }
+        | { type: 'metrics_snapshot'; snapshot: MetricsSnapshot }
 
     interface ChannelState {
         id: string
@@ -87,9 +117,28 @@
     let fontSize = $state(
         parseInt(localStorage.warpgateWebSSHFontSize ?? '14', 10),
     )
+    const storedTerminalTheme = localStorage.getItem('warpgateWebSSHTheme')
+    let terminalThemeName = $state<TerminalThemeName>(
+        isTerminalThemeName(storedTerminalTheme)
+            ? storedTerminalTheme
+            : DEFAULT_TERMINAL_THEME,
+    )
+    let terminalTheme = $derived(TERMINAL_THEMES[terminalThemeName])
+    const terminalThemeOptions = Object.entries(TERMINAL_THEMES) as Array<
+        [TerminalThemeName, (typeof TERMINAL_THEMES)[TerminalThemeName]]
+    >
+
+    let metricsStatus = $state<MetricsStatus>('starting')
+    let metricsStatusMessage = $state<string | null>(null)
+    let metricsSnapshot = $state<MetricsSnapshot | null>(null)
+    let metricsHistory: MetricsSnapshot[] = $state([])
 
     $effect(() => {
         localStorage.warpgateWebSSHFontSize = String(fontSize)
+    })
+
+    $effect(() => {
+        localStorage.warpgateWebSSHTheme = terminalThemeName
     })
 
     function zoomIn() {
@@ -108,6 +157,7 @@
             if (channelOrder.length === 0) {
                 requestNewChannel()
             }
+            send({ type: 'start_metrics' })
         },
         onMessage: data =>
             onMessage(JSON.parse(data as string) as ServerMessage),
@@ -175,6 +225,16 @@
                 break
             case 'host_key_unknown':
                 pendingHostKey = msg
+                break
+            case 'metrics_status':
+                metricsStatus = msg.state
+                metricsStatusMessage = msg.message
+                break
+            case 'metrics_snapshot':
+                metricsStatus = 'available'
+                metricsStatusMessage = null
+                metricsSnapshot = msg.snapshot
+                metricsHistory = [...metricsHistory, msg.snapshot].slice(-60)
                 break
         }
     }
@@ -267,7 +327,7 @@
 <div
     class="ssh-web-client d-flex flex-column"
     use:observeResize
-    style={`background-color: ${THEME.background}`}
+    style={`background-color: ${terminalTheme.background}`}
 >
     <div class="terminal-area flex-grow-1 position-relative">
         {#each channelOrder as id (id)}
@@ -277,6 +337,7 @@
                     bind:this={tabs[id]}
                     active={id === activeChannelId}
                     {fontSize}
+                    theme={terminalTheme}
                     readOnly={ws.state !== ConnectionState.Connected}
                     onInput={data => send({ type: 'input', channel_id: id, data: bytesToBase64(data) })}
                     onResize={(cols, rows) => send({ type: 'resize', channel_id: id, cols, rows })}
@@ -290,6 +351,15 @@
             {/if}
         {/each}
     </div>
+
+    {#if !connectionError}
+        <WebSshMetrics
+            status={metricsStatus}
+            message={metricsStatusMessage}
+            snapshot={metricsSnapshot}
+            history={metricsHistory}
+        />
+    {/if}
 
     {#if connectionError}
         <div class="mx-3 mt-3">
@@ -384,6 +454,18 @@
                             <Fa icon={faPlus} />
                         </button>
                     </div>
+                    <DropdownItem divider />
+                    <div class="dropdown-header">Terminal theme</div>
+                    {#each terminalThemeOptions as [name, option]}
+                        <DropdownItem
+                            onclick={() => { terminalThemeName = name; menuOpen = false }}
+                        >
+                            <span class="theme-check">
+                                {terminalThemeName === name ? '✓' : ''}
+                            </span>
+                            {option.label}
+                        </DropdownItem>
+                    {/each}
                     {#if sessionInfo}
                         <DropdownItem divider />
                         <DropdownItem
@@ -504,6 +586,11 @@
         button {
             pointer-events: initial;
         }
+    }
+
+    .theme-check {
+        display: inline-block;
+        width: 1.25rem;
     }
 
 </style>

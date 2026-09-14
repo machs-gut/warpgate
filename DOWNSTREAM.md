@@ -22,3 +22,10 @@ Rebase each downstream release onto an explicit upstream Warpgate tag. Keep down
 
 - Run Rust, frontend, and container image builds on `bom-wk01`; do not run compilation workloads on Kubernetes control-plane nodes such as `nue-cp02`.
 - Control-plane nodes are limited to lightweight Git/deployment orchestration and verification commands.
+
+## Web SSH UI
+
+- The terminal theme defaults to Tokyo Night and can be switched between Tokyo Night, Catppuccin Mocha, Dracula, Nord, and Warpgate Original.
+- Theme and font-size preferences are browser-local only (`warpgateWebSSHTheme`, `warpgateWebSSHFontSize`) and do not change the Warpgate database.
+- Web SSH starts the fixed backend metrics collector automatically and keeps only the latest 60 one-second samples in browser memory for sparklines.
+- The metrics bar shows CPU, memory, network RX/TX, load, root filesystem usage, uptime, CPU count, and the selected network interface.
