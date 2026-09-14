@@ -1,8 +1,13 @@
 <script lang="ts">
     import {
+        faChartLine,
+        faChevronLeft,
+        faChevronRight,
         faGear,
         faMinus,
         faPlus,
+        faServer,
+        faTerminal,
         faTimes,
     } from '@fortawesome/free-solid-svg-icons'
     import {
@@ -11,105 +16,100 @@
         DropdownItem,
         DropdownMenu,
         DropdownToggle,
+        Input,
         Modal,
         ModalBody,
         ModalFooter,
     } from '@sveltestrap/sveltestrap'
     import ConnectionInstructions from 'common/ConnectionInstructions.svelte'
-    import InfoBox from 'common/InfoBox.svelte'
-    import { reloadServerInfo, serverInfo } from 'gateway/lib/store'
-    import { onDestroy, onMount, tick } from 'svelte'
+    import { handleReauthError } from 'common/reauth'
+    import { onMount, tick } from 'svelte'
     import { SvelteMap } from 'svelte/reactivity'
     import Fa from 'svelte-fa'
     import { loadTheme } from 'theme'
-    import { api, ResponseError, type WebSshSessionInfo } from './lib/api'
     import {
-        ConnectionState,
-        ReconnectingWebSocket,
-    } from './lib/ReconnectingWebSocket.svelte'
+        api,
+        TargetKind,
+        type TargetSnapshot,
+        type WebSshSessionInfo,
+    } from './lib/api'
+    import { ConnectionState } from './lib/ReconnectingWebSocket.svelte'
+    import { reloadServerInfo, serverInfo } from './lib/store'
+    import WebSshConnection from './WebSshConnection.svelte'
     import WebSshMetrics from './WebSshMetrics.svelte'
-    import SshTerminalTab from './WebSshTab.svelte'
     import {
         DEFAULT_TERMINAL_THEME,
         isTerminalThemeName,
         TERMINAL_THEMES,
         type TerminalThemeName,
     } from './WebSshThemes'
+    import type { MetricsViewState } from './WebSshTypes'
 
     interface Props {
         params: { sessionId: string }
     }
     let { params }: Props = $props()
 
-    type ClientMessage =
-        | { type: 'open_channel'; cols?: number; rows?: number }
-        | { type: 'input'; channel_id: string; data: string }
-        | { type: 'resize'; channel_id: string; cols: number; rows: number }
-        | { type: 'close_channel'; channel_id: string }
-        | { type: 'accept_host_key' }
-        | { type: 'reject_host_key' }
-        | { type: 'start_metrics' }
-        | { type: 'stop_metrics' }
-
-    type MetricsStatus = 'starting' | 'available' | 'unavailable' | 'disabled'
-
-    interface MetricsSnapshot {
-        cpu_percent: number | null
-        cpu_count: number
-        memory_used_bytes: number
-        memory_total_bytes: number
-        load1: number
-        rx_bytes_per_sec: number | null
-        tx_bytes_per_sec: number | null
-        network_interface: string | null
-        disk_percent: number
-        uptime_seconds: number
+    interface WorkspaceConnection {
+        sessionId: string
+        targetId: string | null
+        targetName: string
+        targetKind: TargetKind
+        state: ConnectionState
+        attempt: number
+        metrics: MetricsViewState
+        error: string | null
+        notFound: boolean
     }
 
-    type ServerMessage =
-        | { type: 'connection_state'; state: ConnectionState }
-        | { type: 'output'; channel_id: string; data: string }
-        | { type: 'channel_opened'; channel_id: string }
-        | { type: 'channel_closed'; channel_id: string }
-        | { type: 'eof'; channel_id: string }
-        | { type: 'exit_status'; channel_id: string; code: number }
-        | { type: 'error'; message: string }
-        | {
-              type: 'host_key_unknown'
-              host: string
-              port: number
-              key_type: string
-              key_base64: string
-          }
-        | {
-              type: 'metrics_status'
-              state: MetricsStatus
-              message: string | null
-          }
-        | { type: 'metrics_snapshot'; snapshot: MetricsSnapshot }
-
-    interface ChannelState {
+    interface TargetGroupView {
         id: string
-        label: string
-        terminalTitle: string | undefined
-        closed: boolean
+        name: string
+        targets: TargetSnapshot[]
     }
 
-    let channels = new SvelteMap<string, ChannelState>()
-    let channelOrder: string[] = $state([])
-    let activeChannelId: string | null = $state(null)
-    let connectionError: string | null = $state(null)
-    let sessionNotFound = $state(false)
-    let pendingHostKey: Extract<
-        ServerMessage,
-        { type: 'host_key_unknown' }
-    > | null = $state(null)
-    const tabs: Record<string, SshTerminalTab> = {}
+    const emptyMetrics = (): MetricsViewState => ({
+        status: 'starting',
+        message: null,
+        snapshot: null,
+        history: [],
+        lastSampleAt: null,
+    })
 
     // svelte-ignore state_referenced_locally
-    const { sessionId } = params
+    const initialSessionId = params.sessionId
+    let connections = new SvelteMap<string, WorkspaceConnection>()
+    let connectionOrder: string[] = $state([initialSessionId])
+    let activeSessionId: string | null = $state(initialSessionId)
+    const panes: Record<string, WebSshConnection> = {}
 
-    let sessionInfo = $state<WebSshSessionInfo | null>(null)
+    connections.set(initialSessionId, {
+        sessionId: initialSessionId,
+        targetId: null,
+        targetName: 'Loading…',
+        targetKind: TargetKind.Ssh,
+        state: ConnectionState.Connecting,
+        attempt: 0,
+        metrics: emptyMetrics(),
+        error: null,
+        notFound: false,
+    })
+
+    let sshTargets: TargetSnapshot[] = $state([])
+    let targetsLoading = $state(true)
+    let targetLoadError = $state<string | null>(null)
+    let connectError = $state<string | null>(null)
+    let targetSearch = $state('')
+    let selectedTargetIds: string[] = $state([])
+    let pendingTargetIds: string[] = $state([])
+    let collapsedGroupIds: string[] = $state([])
+
+    const storedSidebar = localStorage.getItem('warpgateWebSSHSidebarOpen')
+    const storedMetricsRail = localStorage.getItem(
+        'warpgateWebSSHMetricsRailOpen',
+    )
+    let sidebarOpen = $state(storedSidebar !== 'false')
+    let metricsRailOpen = $state(storedMetricsRail !== 'false')
 
     const FONT_SIZE_MIN = 8
     const FONT_SIZE_MAX = 32
@@ -127,19 +127,63 @@
     const terminalThemeOptions = Object.entries(TERMINAL_THEMES) as Array<
         [TerminalThemeName, (typeof TERMINAL_THEMES)[TerminalThemeName]]
     >
+    let menuOpen = $state(false)
+    let showInstructions = $state(false)
 
-    let metricsStatus = $state<MetricsStatus>('starting')
-    let metricsStatusMessage = $state<string | null>(null)
-    let metricsSnapshot = $state<MetricsSnapshot | null>(null)
-    let metricsHistory: MetricsSnapshot[] = $state([])
-    let metricsLastSampleAt = $state<number | null>(null)
+    let activeConnection = $derived(
+        activeSessionId ? (connections.get(activeSessionId) ?? null) : null,
+    )
+    let connectedTargetIds = $derived.by(() =>
+        connectionOrder
+            .map(id => connections.get(id)?.targetId)
+            .filter((id): id is string => !!id),
+    )
+    let filteredTargets = $derived.by(() => {
+        const search = targetSearch.trim().toLowerCase()
+        if (!search) return sshTargets
+        return sshTargets.filter(target =>
+            `${target.group?.name ?? ''} ${target.name} ${target.description}`
+                .toLowerCase()
+                .includes(search),
+        )
+    })
+    let targetGroups = $derived.by<TargetGroupView[]>(() => {
+        const groups = new Map<string, TargetGroupView>()
+        for (const target of filteredTargets) {
+            const id = target.group?.id ?? '__ungrouped__'
+            const group = groups.get(id) ?? {
+                id,
+                name: target.group?.name ?? 'Ungrouped',
+                targets: [],
+            }
+            group.targets.push(target)
+            groups.set(id, group)
+        }
+        const collator = new Intl.Collator(undefined, {
+            numeric: true,
+            sensitivity: 'base',
+        })
+        return [...groups.values()]
+            .map(group => ({
+                ...group,
+                targets: [...group.targets].sort((a, b) =>
+                    collator.compare(a.name, b.name),
+                ),
+            }))
+            .sort((a, b) => collator.compare(a.name, b.name))
+    })
 
     $effect(() => {
         localStorage.warpgateWebSSHFontSize = String(fontSize)
     })
-
     $effect(() => {
         localStorage.warpgateWebSSHTheme = terminalThemeName
+    })
+    $effect(() => {
+        localStorage.warpgateWebSSHSidebarOpen = String(sidebarOpen)
+    })
+    $effect(() => {
+        localStorage.warpgateWebSSHMetricsRailOpen = String(metricsRailOpen)
     })
 
     function zoomIn() {
@@ -149,297 +193,551 @@
         fontSize = Math.max(FONT_SIZE_MIN, fontSize - FONT_SIZE_STEP)
     }
 
-    let menuOpen = $state(false)
-    let showInstructions = $state(false)
-
-    const ws = new ReconnectingWebSocket({
-        url: `wss://${location.host}/@warpgate/api/web-ssh/sessions/${sessionId}/stream`,
-        onOpen: () => {
-            if (channelOrder.length === 0) {
-                requestNewChannel()
-            }
-            send({ type: 'start_metrics' })
-        },
-        onMessage: data =>
-            onMessage(JSON.parse(data as string) as ServerMessage),
-    })
-
-    function send(msg: ClientMessage) {
-        ws.send(JSON.stringify(msg))
+    function updateConnection(
+        sessionId: string,
+        patch: Partial<WorkspaceConnection>,
+    ) {
+        const current = connections.get(sessionId)
+        if (!current) return
+        connections.set(sessionId, { ...current, ...patch })
     }
 
-    function bytesToBase64(bytes: Uint8Array): string {
-        let binary = ''
-        const chunkSize = 0x8000
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-            const chunk = bytes.subarray(i, i + chunkSize)
-            binary += String.fromCharCode(...chunk)
-        }
-        return btoa(binary)
+    function connectionForTarget(targetId: string) {
+        return connectionOrder
+            .map(id => connections.get(id))
+            .find(connection => connection?.targetId === targetId)
     }
 
-    function requestNewChannel() {
-        const size = activeChannelId ? tabs[activeChannelId]?.getSize() : null
-        send({
-            type: 'open_channel',
-            cols: size?.cols ?? 80,
-            rows: size?.rows ?? 24,
-        })
-    }
-
-    function onMessage(msg: ServerMessage) {
-        switch (msg.type) {
-            case 'connection_state':
-                ws.state = msg.state
-                break
-            case 'channel_opened':
-                openChannel(msg.channel_id)
-                break
-            case 'output':
-                tabs[msg.channel_id]?.write(
-                    Uint8Array.from(atob(msg.data), c => c.charCodeAt(0)),
-                )
-                break
-            case 'channel_closed':
-            case 'eof': {
-                const ch = channels.get(msg.channel_id)
-                if (ch) {
-                    ch.closed = true
-                }
-                break
-            }
-            case 'exit_status': {
-                const ch = channels.get(msg.channel_id)
-                if (ch) {
-                    tabs[msg.channel_id]?.write(
-                        Uint8Array.from(
-                            `\r\n[Process exited with code ${msg.code}]\r\n`,
-                            c => c.charCodeAt(0),
-                        ),
-                    )
-                }
-                break
-            }
-            case 'error':
-                ws.state = ConnectionState.Error
-                connectionError = msg.message
-                break
-            case 'host_key_unknown':
-                pendingHostKey = msg
-                break
-            case 'metrics_status':
-                metricsStatus = msg.state
-                metricsStatusMessage = msg.message
-                break
-            case 'metrics_snapshot':
-                metricsStatus = 'available'
-                metricsStatusMessage = null
-                metricsSnapshot = msg.snapshot
-                metricsLastSampleAt = Date.now()
-                metricsHistory = [...metricsHistory, msg.snapshot].slice(-60)
-                break
+    function reconcileTargetId(sessionId: string) {
+        const connection = connections.get(sessionId)
+        if (!connection || connection.targetId || !connection.targetName) return
+        const matches = sshTargets.filter(
+            target =>
+                target.name === connection.targetName &&
+                target.kind === connection.targetKind,
+        )
+        const [match] = matches
+        if (matches.length === 1 && match) {
+            updateConnection(sessionId, { targetId: match.id })
         }
     }
 
-    function channelDisplayLabel(id: string, channel: ChannelState): string {
-        const terminalTitle = channel.terminalTitle?.trim()
-        if (terminalTitle) return terminalTitle
-
-        const targetName = sessionInfo?.targetName
-        if (!targetName) return channel.label
-
-        const index = channelOrder.indexOf(id)
-        return index > 0 ? `${targetName} · ${index + 1}` : targetName
-    }
-
-    function openChannel(id: string) {
-        channels.set(id, {
-            id,
-            label: `Shell ${channelOrder.length + 1}`,
-            terminalTitle: undefined,
-            closed: false,
+    function onInfo(sessionId: string, info: WebSshSessionInfo) {
+        updateConnection(sessionId, {
+            targetName: info.targetName,
+            targetKind: info.targetKind,
+            error: null,
+            notFound: false,
         })
-        channelOrder = [...channelOrder, id]
-        activeChannelId = id
+        reconcileTargetId(sessionId)
     }
 
-    async function switchToChannel(id: string) {
-        activeChannelId = id
-        // wait until visible
+    function onConnectionState(
+        sessionId: string,
+        state: ConnectionState,
+        attempt: number,
+    ) {
+        updateConnection(sessionId, { state, attempt })
+    }
+
+    function onMetrics(sessionId: string, metrics: MetricsViewState) {
+        updateConnection(sessionId, { metrics })
+    }
+
+    function onError(
+        sessionId: string,
+        message: string | null,
+        notFound: boolean,
+    ) {
+        updateConnection(sessionId, { error: message, notFound })
+    }
+
+    async function switchSession(sessionId: string) {
+        activeSessionId = sessionId
         await tick()
-        requestAnimationFrame(() => {
-            tabs[id]?.fit()
-        })
+        requestAnimationFrame(() => panes[sessionId]?.fit())
     }
 
-    function closeTab(id: string) {
-        send({ type: 'close_channel', channel_id: id })
-        channels.delete(id)
-        channelOrder = channelOrder.filter(x => x !== id)
-        if (activeChannelId === id) {
-            activeChannelId = channelOrder[channelOrder.length - 1] ?? null
+    function addConnection(
+        sessionId: string,
+        target: TargetSnapshot,
+    ): WorkspaceConnection {
+        const connection: WorkspaceConnection = {
+            sessionId,
+            targetId: target.id,
+            targetName: target.name,
+            targetKind: target.kind,
+            state: ConnectionState.Connecting,
+            attempt: 0,
+            metrics: emptyMetrics(),
+            error: null,
+            notFound: false,
         }
+        connections.set(sessionId, connection)
+        connectionOrder = [...connectionOrder, sessionId]
+        return connection
     }
 
-    function observeResize(node: HTMLElement) {
-        const resizeObserver = new ResizeObserver(() => {
-            if (activeChannelId) {
-                tabs[activeChannelId]?.fit()
-            }
-        })
-        resizeObserver.observe(node)
-        return {
-            destroy() {
-                resizeObserver.disconnect()
-            },
+    async function connectTarget(target: TargetSnapshot) {
+        const existing = connectionForTarget(target.id)
+        if (existing) {
+            await switchSession(existing.sessionId)
+            return existing
         }
-    }
+        if (pendingTargetIds.includes(target.id)) return null
 
-    async function disconnect() {
-        ws.close()
-        await api.deleteWebSshSession({ sessionId })
-        window.close()
-    }
-
-    onMount(async () => {
-        reloadServerInfo()
-
+        pendingTargetIds = [...pendingTargetIds, target.id]
+        connectError = null
         try {
-            sessionInfo = await api.getWebSshSession({ sessionId })
-        } catch (e) {
-            connectionError =
-                e instanceof Error ? e.message : 'Failed to load session info'
-            if (e instanceof ResponseError && e.response.status === 404) {
-                sessionNotFound = true
+            const { sessionId } = await api.createWebSshSession({
+                createWebSshSessionBody: { targetId: target.id },
+            })
+            const connection = addConnection(sessionId, target)
+            await switchSession(sessionId)
+            return connection
+        } catch (err) {
+            if (!(await handleReauthError(err))) {
+                connectError =
+                    err instanceof Error
+                        ? err.message
+                        : 'Failed to connect target'
             }
-            return
+            return null
+        } finally {
+            pendingTargetIds = pendingTargetIds.filter(id => id !== target.id)
         }
-        ws.connect()
+    }
+
+    function toggleSelected(targetId: string) {
+        selectedTargetIds = selectedTargetIds.includes(targetId)
+            ? selectedTargetIds.filter(id => id !== targetId)
+            : [...selectedTargetIds, targetId]
+    }
+
+    async function connectSelected() {
+        const selected = sshTargets.filter(
+            target =>
+                selectedTargetIds.includes(target.id) &&
+                !connectedTargetIds.includes(target.id),
+        )
+        for (const target of selected) {
+            await connectTarget(target)
+        }
+        selectedTargetIds = []
+    }
+
+    async function closeSession(sessionId: string) {
+        await panes[sessionId]?.disconnect()
+        connections.delete(sessionId)
+        delete panes[sessionId]
+        connectionOrder = connectionOrder.filter(id => id !== sessionId)
+        if (activeSessionId === sessionId) {
+            const nextSessionId =
+                connectionOrder[connectionOrder.length - 1] ?? null
+            activeSessionId = nextSessionId
+            if (nextSessionId) {
+                await tick()
+                requestAnimationFrame(() => panes[nextSessionId]?.fit())
+            }
+        }
+    }
+
+    async function disconnectAll() {
+        for (const sessionId of [...connectionOrder]) {
+            await panes[sessionId]?.disconnect()
+            connections.delete(sessionId)
+            delete panes[sessionId]
+        }
+        connectionOrder = []
+        activeSessionId = null
+    }
+    function toggleGroup(groupId: string) {
+        collapsedGroupIds = collapsedGroupIds.includes(groupId)
+            ? collapsedGroupIds.filter(id => id !== groupId)
+            : [...collapsedGroupIds, groupId]
+    }
+
+    function newShell() {
+        if (activeSessionId) panes[activeSessionId]?.newShell()
+    }
+
+    function connectionStateLabel(connection: WorkspaceConnection | null) {
+        if (!connection) return 'No active session'
+        if (connection.error)
+            return connection.notFound ? 'Session expired' : 'Error'
+        if (
+            connection.state === ConnectionState.Connecting &&
+            connection.attempt > 0
+        ) {
+            return `${connection.state} · attempt ${connection.attempt}`
+        }
+        return connection.state
+    }
+
+    function stateClass(connection: WorkspaceConnection) {
+        if (connection.error || connection.state === ConnectionState.Error)
+            return 'error'
+        if (connection.state === ConnectionState.Connected) return 'connected'
+        return 'connecting'
+    }
+
+    async function loadTargets() {
+        targetsLoading = true
+        targetLoadError = null
+        try {
+            const targets = await api.getTargets({})
+            sshTargets = targets.filter(
+                target => target.kind === TargetKind.Ssh,
+            )
+            for (const sessionId of connectionOrder)
+                reconcileTargetId(sessionId)
+        } catch (err) {
+            targetLoadError =
+                err instanceof Error
+                    ? err.message
+                    : 'Failed to load SSH targets'
+        } finally {
+            targetsLoading = false
+        }
+    }
+
+    onMount(() => {
+        reloadServerInfo()
+        loadTargets()
+        if (window.innerWidth < 1100) {
+            if (storedSidebar === null) sidebarOpen = false
+            if (storedMetricsRail === null) metricsRailOpen = false
+        }
     })
 
     const originalTitle = document.title
-    const windowTitle = $derived.by(() => {
-        const activeTerminalTitle = activeChannelId
-            ? channels.get(activeChannelId)?.terminalTitle
-            : undefined
-        const baseTitle = activeTerminalTitle ?? originalTitle
-        const targetName = sessionInfo?.targetName
-        return targetName ? `${targetName} - ${baseTitle}` : baseTitle
-    })
+    let windowTitle = $derived(
+        activeConnection
+            ? `${activeConnection.targetName} - ${originalTitle}`
+            : originalTitle,
+    )
     $effect(() => {
         document.title = windowTitle
-    })
-
-    onDestroy(() => {
-        ws.close()
     })
 
     loadTheme('dark')
 </script>
 
 <div
-    class="ssh-web-client d-flex flex-column"
-    use:observeResize
+    class="webssh-workspace"
     style={`background-color: ${terminalTheme.background}`}
 >
-    <div class="terminal-area flex-grow-1 position-relative">
-        {#each channelOrder as id (id)}
-            {@const channel = channels.get(id)}
-            {#if channel}
-                <SshTerminalTab
-                    bind:this={tabs[id]}
-                    active={id === activeChannelId}
-                    {fontSize}
-                    theme={terminalTheme}
-                    readOnly={ws.state !== ConnectionState.Connected}
-                    onInput={data => send({ type: 'input', channel_id: id, data: bytesToBase64(data) })}
-                    onResize={(cols, rows) => send({ type: 'resize', channel_id: id, cols, rows })}
-                    onTitleChange={title => {
-                        channels.set(id, {
-                            ...channel,
-                            terminalTitle: title.trim() || undefined,
-                        })
-                    }}
-                />
-            {/if}
-        {/each}
+    <div class="workspace-topbar">
+        <button
+            type="button"
+            class="icon-button"
+            class:active={sidebarOpen}
+            aria-label={sidebarOpen ? 'Hide servers' : 'Show servers'}
+            title={sidebarOpen ? 'Hide servers' : 'Show servers'}
+            onclick={() => sidebarOpen = !sidebarOpen}
+        >
+            <Fa icon={faServer} />
+        </button>
+
+        <div class="session-tabs">
+            {#each connectionOrder as sessionId (sessionId)}
+                {@const connection = connections.get(sessionId)}
+                {#if connection}
+                    <!-- biome-ignore lint/a11y/useSemanticElements: composite tab -->
+                    <div
+                        class="session-tab"
+                        class:active={sessionId === activeSessionId}
+                        role="button"
+                        tabindex="0"
+                        onclick={() => switchSession(sessionId)}
+                        onkeydown={e =>
+                            e.key === 'Enter' && switchSession(sessionId)}
+                    >
+                        <span
+                            class="connection-dot {stateClass(connection)}"
+                        ></span>
+                        <span class="session-name"
+                            >{connection.targetName}</span
+                        >
+                        <button
+                            type="button"
+                            class="tab-close"
+                            aria-label={`Disconnect ${connection.targetName}`}
+                            onclick={e => {
+                                e.stopPropagation()
+                                closeSession(sessionId)
+                            }}
+                        >
+                            <Fa icon={faTimes} />
+                        </button>
+                    </div>
+                {/if}
+            {/each}
+
+            <button
+                type="button"
+                class="top-action"
+                title="Connect servers"
+                aria-label="Connect servers"
+                onclick={() => sidebarOpen = true}
+            >
+                <Fa icon={faPlus} />
+            </button>
+            <button
+                type="button"
+                class="top-action"
+                disabled={!activeConnection || activeConnection.state !== ConnectionState.Connected}
+                title="New shell on current server"
+                aria-label="New shell on current server"
+                onclick={newShell}
+            >
+                <Fa icon={faTerminal} />+
+            </button>
+        </div>
+
+        <button
+            type="button"
+            class="icon-button"
+            class:active={metricsRailOpen}
+            aria-label={metricsRailOpen ? 'Hide metrics' : 'Show metrics'}
+            title={metricsRailOpen ? 'Hide metrics' : 'Show metrics'}
+            onclick={() => metricsRailOpen = !metricsRailOpen}
+        >
+            <Fa icon={faChartLine} />
+        </button>
     </div>
 
-    {#if !connectionError}
-        <WebSshMetrics
-            status={metricsStatus}
-            message={metricsStatusMessage}
-            snapshot={metricsSnapshot}
-            history={metricsHistory}
-            lastSampleAt={metricsLastSampleAt}
-        />
-    {/if}
-
-    {#if connectionError}
-        <div class="mx-3 mt-3">
-            <InfoBox variant="warning">
-                {#if sessionNotFound}
-                    Session not found. It may have expired or been closed.
-                {:else}
-                    {connectionError}
-                {/if}
-            </InfoBox>
-        </div>
-    {:else}
-        <div class="toolbar d-flex align-items-center gap-2 p-2">
-            <div class="tab-bar d-flex align-items-stretch gap-2 flex-grow-1">
-                {#each channelOrder as id (id)}
-                    {@const ch = channels.get(id)}
-                    {#if ch}
-                        <!-- biome-ignore lint/a11y/useSemanticElements: nested -->
-                        <div
-                            class="tab btn btn-secondary d-flex align-items-center"
-                            class:active={id === activeChannelId}
-                            tabindex="0"
-                            role="button"
-                            onclick={() => switchToChannel(id)}
-                            onkeydown={e => e.key === 'Enter' && switchToChannel(id)}
-                        >
-                            <span class="label">
-                                {channelDisplayLabel(id, ch)}
-                            </span>
-                            <button
-                                type="button"
-                                class="btn btn-link btn-sm close-button"
-                                onclick={e => { e.stopPropagation(); closeTab(id) }}
-                            >
-                                <Fa icon={faTimes} />
-                            </button>
-                        </div>
-                    {/if}
-                {/each}
-
-                {#if ws.state === ConnectionState.Connected}
+    <div class="workspace-body">
+        {#if sidebarOpen}
+            <aside class="targets-panel">
+                <div class="panel-header">
+                    <div>
+                        <div class="panel-kicker">WORKSPACE</div>
+                        <div class="panel-title">Servers</div>
+                    </div>
                     <button
                         type="button"
-                        class="btn btn-secondary px-3"
-                        onclick={requestNewChannel}
+                        class="panel-collapse"
+                        aria-label="Hide servers"
+                        onclick={() => sidebarOpen = false}
                     >
-                        <Fa icon={faPlus} />
+                        <Fa icon={faChevronLeft} />
                     </button>
+                </div>
+
+                <div class="target-search">
+                    <Input
+                        type="search"
+                        placeholder="Search servers"
+                        bind:value={targetSearch}
+                        aria-label="Search SSH targets"
+                    />
+                </div>
+
+                {#if connectError}
+                    <div class="connect-error">{connectError}</div>
                 {/if}
-            </div>
 
-            {#if !sessionNotFound}
-                <span class="text-muted small me-3">
-                    {ws.state}
-                    {#if ws.state === ConnectionState.Connecting && ws.attempt > 0}
-                        &nbsp;(attempt {ws.attempt})
+                <div class="targets-list">
+                    {#if targetsLoading}
+                        <div class="panel-empty">Loading targets…</div>
+                    {:else if targetLoadError}
+                        <div class="panel-error">{targetLoadError}</div>
+                    {:else if targetGroups.length === 0}
+                        <div class="panel-empty">No SSH targets found</div>
+                    {:else}
+                        {#each targetGroups as group (group.id)}
+                            <section class="target-group">
+                                <button
+                                    type="button"
+                                    class="group-header"
+                                    onclick={() => toggleGroup(group.id)}
+                                >
+                                    <span class="group-chevron">
+                                        {collapsedGroupIds.includes(group.id) ? '›' : '⌄'}
+                                    </span>
+                                    <span class="group-name">{group.name}</span>
+                                    <span class="group-count"
+                                        >{group.targets.length}</span
+                                    >
+                                </button>
+
+                                {#if !collapsedGroupIds.includes(group.id)}
+                                    <div class="group-targets">
+                                        {#each group.targets as target (target.id)}
+                                            {@const connected = connectedTargetIds.includes(target.id)}
+                                            {@const pending = pendingTargetIds.includes(target.id)}
+                                            {@const selected = selectedTargetIds.includes(target.id)}
+                                            {@const connection = connectionForTarget(target.id)}
+                                            <!-- biome-ignore lint/a11y/useSemanticElements: composite target selector -->
+                                            <div
+                                                class="target-row"
+                                                class:connected
+                                                class:selected
+                                                role="button"
+                                                tabindex="0"
+                                                onclick={() => {
+                                                    if (connection) {
+                                                        switchSession(connection.sessionId)
+                                                    } else if (!pending) {
+                                                        toggleSelected(target.id)
+                                                    }
+                                                }}
+                                                onkeydown={e => {
+                                                    if (e.key !== 'Enter') return
+                                                    if (connection) switchSession(connection.sessionId)
+                                                    else if (!pending) toggleSelected(target.id)
+                                                }}
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    checked={connected || selected}
+                                                    disabled={connected || pending}
+                                                    aria-label={`Select ${target.name}`}
+                                                    onclick={e => e.stopPropagation()}
+                                                    onchange={() => toggleSelected(target.id)}
+                                                >
+                                                <span class="target-main">
+                                                    <span class="target-name"
+                                                        >{target.name}</span
+                                                    >
+                                                    {#if target.description}
+                                                        <span
+                                                            class="target-description"
+                                                            >{target.description}</span
+                                                        >
+                                                    {/if}
+                                                </span>
+                                                {#if pending}
+                                                    <span
+                                                        class="target-state pending"
+                                                        >…</span
+                                                    >
+                                                {:else if connected}
+                                                    <span
+                                                        class="target-state connected"
+                                                        >●</span
+                                                    >
+                                                {/if}
+                                            </div>
+                                        {/each}
+                                    </div>
+                                {/if}
+                            </section>
+                        {/each}
                     {/if}
-                </span>
-            {/if}
+                </div>
 
-            {#if ws.state === ConnectionState.Connected}
-                <Button color="danger" onclick={disconnect}>Disconnect</Button>
+                <div class="targets-footer">
+                    <Button
+                        color="primary"
+                        size="sm"
+                        disabled={selectedTargetIds.length === 0}
+                        onclick={connectSelected}
+                    >
+                        Connect{selectedTargetIds.length > 0
+                            ? ` ${selectedTargetIds.length}`
+                            : ''}
+                    </Button>
+                    <span>{connectedTargetIds.length} connected</span>
+                </div>
+            </aside>
+        {/if}
+
+        <main class="terminal-stack">
+            {#each connectionOrder as sessionId (sessionId)}
+                <WebSshConnection
+                    bind:this={panes[sessionId]}
+                    {sessionId}
+                    active={sessionId === activeSessionId}
+                    {fontSize}
+                    theme={terminalTheme}
+                    {onInfo}
+                    {onConnectionState}
+                    {onMetrics}
+                    {onError}
+                />
+            {/each}
+
+            {#if connectionOrder.length === 0}
+                <div class="workspace-empty">
+                    <Fa icon={faServer} size="2x" />
+                    <strong>No server connected</strong>
+                    <span>Select SSH targets from the Servers panel.</span>
+                    <Button
+                        color="primary"
+                        size="sm"
+                        onclick={() => sidebarOpen = true}
+                    >
+                        Choose servers
+                    </Button>
+                </div>
+            {/if}
+        </main>
+
+        {#if metricsRailOpen}
+            <aside class="metrics-panel">
+                <div class="metrics-panel-header">
+                    <div>
+                        <div class="panel-kicker">CURRENT SERVER</div>
+                        <div class="panel-title">
+                            {activeConnection?.targetName ?? 'Metrics'}
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        class="panel-collapse"
+                        aria-label="Hide metrics"
+                        onclick={() => metricsRailOpen = false}
+                    >
+                        <Fa icon={faChevronRight} />
+                    </button>
+                </div>
+                {#if activeConnection}
+                    <WebSshMetrics
+                        layout="rail"
+                        status={activeConnection.metrics.status}
+                        message={activeConnection.metrics.message}
+                        snapshot={activeConnection.metrics.snapshot}
+                        history={activeConnection.metrics.history}
+                        lastSampleAt={activeConnection.metrics.lastSampleAt}
+                    />
+                {:else}
+                    <div class="panel-empty">
+                        Connect a server to see metrics.
+                    </div>
+                {/if}
+            </aside>
+        {/if}
+    </div>
+
+    <div class="workspace-footer">
+        <div class="footer-status">
+            {#if activeConnection}
+                <span
+                    class="connection-dot {stateClass(activeConnection)}"
+                ></span>
+                <strong>{activeConnection.targetName}</strong>
+                <span>{connectionStateLabel(activeConnection)}</span>
+            {:else}
+                <span>No active session</span>
+            {/if}
+        </div>
+
+        <div class="footer-actions">
+            {#if activeConnection}
+                <Button
+                    color="danger"
+                    size="sm"
+                    onclick={() =>
+                        activeConnection && closeSession(activeConnection.sessionId)}
+                >
+                    Disconnect
+                </Button>
             {/if}
 
             <Dropdown bind:isOpen={menuOpen}>
-                <DropdownToggle color="secondary" caret={false}>
+                <DropdownToggle color="secondary" size="sm" caret={false}>
                     <Fa icon={faGear} />
                 </DropdownToggle>
                 <DropdownMenu end>
@@ -455,9 +753,9 @@
                         >
                             <Fa icon={faMinus} />
                         </button>
-                        <span class="text-nowrap ms-auto me-auto">
-                            {fontSize}px
-                        </span>
+                        <span class="text-nowrap ms-auto me-auto"
+                            >{fontSize}px</span
+                        >
                         <button
                             type="button"
                             class="btn btn-sm btn-secondary"
@@ -472,7 +770,10 @@
                     <div class="dropdown-header">Terminal theme</div>
                     {#each terminalThemeOptions as [name, option]}
                         <DropdownItem
-                            onclick={() => { terminalThemeName = name; menuOpen = false }}
+                            onclick={() => {
+                                terminalThemeName = name
+                                menuOpen = false
+                            }}
                         >
                             <span class="theme-check">
                                 {terminalThemeName === name ? '✓' : ''}
@@ -480,21 +781,46 @@
                             {option.label}
                         </DropdownItem>
                     {/each}
-                    {#if sessionInfo}
+                    <DropdownItem divider />
+                    <DropdownItem onclick={() => sidebarOpen = !sidebarOpen}>
+                        {sidebarOpen ? 'Hide' : 'Show'}
+                        servers panel
+                    </DropdownItem>
+                    <DropdownItem
+                        onclick={() => metricsRailOpen = !metricsRailOpen}
+                    >
+                        {metricsRailOpen ? 'Hide' : 'Show'}
+                        metrics panel
+                    </DropdownItem>
+                    {#if activeConnection}
                         <DropdownItem divider />
                         <DropdownItem
-                            onclick={() => { showInstructions = true; menuOpen = false }}
+                            onclick={() => {
+                                showInstructions = true
+                                menuOpen = false
+                            }}
                         >
                             Connect from your machine
+                        </DropdownItem>
+                    {/if}
+                    {#if connectionOrder.length > 1}
+                        <DropdownItem divider />
+                        <DropdownItem
+                            onclick={() => {
+                                disconnectAll()
+                                menuOpen = false
+                            }}
+                        >
+                            Disconnect all
                         </DropdownItem>
                     {/if}
                 </DropdownMenu>
             </Dropdown>
         </div>
-    {/if}
+    </div>
 </div>
 
-{#if sessionInfo}
+{#if activeConnection}
     <Modal
         isOpen={showInstructions}
         toggle={() => showInstructions = false}
@@ -502,54 +828,14 @@
     >
         <ModalBody>
             <ConnectionInstructions
-                targetName={sessionInfo.targetName}
-                targetKind={sessionInfo.targetKind}
+                targetName={activeConnection.targetName}
+                targetKind={activeConnection.targetKind}
                 username={$serverInfo?.username}
             />
         </ModalBody>
         <ModalFooter>
-            <Button
-                color="secondary"
-                class="modal-button"
-                onclick={() => showInstructions = false}
-            >
+            <Button color="secondary" onclick={() => showInstructions = false}>
                 Close
-            </Button>
-        </ModalFooter>
-    </Modal>
-{/if}
-
-{#if pendingHostKey}
-    <Modal isOpen={true} backdrop="static" keyboard={false}>
-        <ModalBody>
-            <div class="mb-3">
-                There is currently no trusted {pendingHostKey.key_type} key for
-                the SSH server at {pendingHostKey.host}:{pendingHostKey.port}.
-                Trust this key?
-            </div>
-            <code>{pendingHostKey.key_type} {pendingHostKey.key_base64}</code>
-        </ModalBody>
-        <ModalFooter>
-            <Button
-                color="danger"
-                class="modal-button"
-                onclick={() => {
-                send({ type: 'reject_host_key' })
-                pendingHostKey = null
-                disconnect()
-            }}
-            >
-                Reject and disconnect
-            </Button>
-            <Button
-                color="primary"
-                class="modal-button"
-                onclick={() => {
-                send({ type: 'accept_host_key' })
-                pendingHostKey = null
-            }}
-            >
-                Accept and connect
             </Button>
         </ModalFooter>
     </Modal>
@@ -561,45 +847,425 @@
         overflow: hidden;
     }
 
-    .ssh-web-client {
+    .webssh-workspace {
+        width: 100vw;
         height: 100vh;
-    }
-
-    .toolbar {
-        flex-shrink: 0;
-        margin: 10px;
-        background: black;
-        border-radius: 10px;
-    }
-
-    .tab-bar {
-        overflow-x: auto;
-    }
-
-    .terminal-area {
+        display: flex;
+        flex-direction: column;
+        color: rgba(255, 255, 255, 0.88);
         overflow: hidden;
     }
 
-    .tab {
+    .workspace-topbar,
+    .workspace-footer {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        min-height: 42px;
+        padding: 5px 8px;
+        background: rgba(0, 0, 0, 0.58);
+        border-color: rgba(255, 255, 255, 0.07);
+        border-style: solid;
+        border-width: 0 0 1px;
+    }
+
+    .workspace-footer {
+        min-height: 38px;
+        justify-content: space-between;
+        border-width: 1px 0 0;
+    }
+
+    .workspace-body {
+        position: relative;
+        min-height: 0;
+        flex: 1 1 auto;
+        display: flex;
+        overflow: hidden;
+    }
+
+    .icon-button,
+    .top-action,
+    .panel-collapse,
+    .tab-close {
+        border: 0;
+        color: rgba(255, 255, 255, 0.58);
+        background: transparent;
+    }
+
+    .icon-button {
+        width: 32px;
+        height: 32px;
+        flex: 0 0 auto;
+        border-radius: 6px;
+    }
+
+    .icon-button:hover,
+    .icon-button.active,
+    .top-action:hover:not(:disabled),
+    .panel-collapse:hover {
+        color: rgba(255, 255, 255, 0.94);
+        background: rgba(255, 255, 255, 0.08);
+    }
+
+    .session-tabs {
+        min-width: 0;
+        flex: 1 1 auto;
+        display: flex;
+        align-items: stretch;
+        gap: 5px;
+        margin: 0 7px;
+        overflow-x: auto;
+        scrollbar-width: thin;
+    }
+
+    .session-tab {
+        min-width: 120px;
+        max-width: 240px;
+        height: 32px;
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 0 5px 0 10px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 6px;
+        color: rgba(255, 255, 255, 0.62);
+        background: rgba(255, 255, 255, 0.035);
+        cursor: pointer;
+    }
+
+    .session-tab.active {
+        color: rgba(255, 255, 255, 0.96);
+        border-color: rgba(88, 166, 255, 0.44);
+        background: rgba(88, 166, 255, 0.13);
+    }
+
+    .session-name {
+        min-width: 0;
+        flex: 1 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.78rem;
+        font-weight: 600;
+    }
+
+    .connection-dot {
+        width: 7px;
+        height: 7px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.3);
+    }
+    .connection-dot.connected {
+        background: #7ee787;
+        box-shadow: 0 0 7px rgba(126, 231, 135, 0.42);
+    }
+
+    .connection-dot.connecting {
+        background: #d29922;
+    }
+
+    .connection-dot.error {
+        background: #ff7b72;
+    }
+
+    .tab-close {
+        width: 22px;
+        height: 22px;
         padding: 0;
+        border-radius: 4px;
+        opacity: 0.58;
+    }
 
-        .label {
-            margin: 0.25rem 0 0.25rem 1rem;
-        }
+    .tab-close:hover {
+        opacity: 1;
+        background: rgba(255, 255, 255, 0.09);
+    }
 
-        .close-button {
-            margin-left: 0.5rem;
-        }
+    .top-action {
+        min-width: 32px;
+        height: 32px;
+        flex: 0 0 auto;
+        border-radius: 6px;
+        font-size: 0.72rem;
+    }
+    .top-action:disabled {
+        opacity: 0.3;
+    }
+
+    .targets-panel,
+    .metrics-panel {
+        min-height: 0;
+        flex: 0 0 auto;
+        display: flex;
+        flex-direction: column;
+        background: rgba(10, 12, 18, 0.94);
+        border-color: rgba(255, 255, 255, 0.07);
+        z-index: 10;
+    }
+
+    .targets-panel {
+        width: 246px;
+        border-right: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    .metrics-panel {
+        width: 244px;
+        border-left: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    .panel-header,
+    .metrics-panel-header {
+        min-height: 52px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 10px 7px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .panel-kicker {
+        color: rgba(255, 255, 255, 0.34);
+        font-size: 0.58rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+    }
+
+    .panel-title {
+        max-width: 185px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 0.9rem;
+        font-weight: 700;
+    }
+
+    .panel-collapse {
+        width: 28px;
+        height: 28px;
+        flex: 0 0 auto;
+        border-radius: 5px;
+    }
+
+    .target-search {
+        padding: 8px 9px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .target-search :global(input) {
+        height: 32px;
+        border-color: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.86);
+        background: rgba(255, 255, 255, 0.045);
+    }
+
+    .targets-list {
+        min-height: 0;
+        flex: 1 1 auto;
+        overflow-y: auto;
+        padding: 5px 0 8px;
+    }
+
+    .group-header {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border: 0;
+        color: rgba(255, 255, 255, 0.58);
+        background: transparent;
+        text-align: left;
+        font-size: 0.72rem;
+        font-weight: 700;
+    }
+
+    .group-header:hover {
+        color: rgba(255, 255, 255, 0.88);
+        background: rgba(255, 255, 255, 0.035);
+    }
+
+    .group-chevron {
+        width: 10px;
+        font-size: 0.9rem;
+    }
+
+    .group-name {
+        min-width: 0;
+        flex: 1 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .group-count {
+        color: rgba(255, 255, 255, 0.3);
+        font-size: 0.65rem;
+    }
+
+    .group-targets {
+        padding: 0 5px 4px;
+    }
+
+    .target-row {
+        min-height: 34px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 1px 0;
+        padding: 5px 7px 5px 12px;
+        border-radius: 5px;
+        color: rgba(255, 255, 255, 0.68);
+        cursor: pointer;
+    }
+
+    .target-row:hover,
+    .target-row.selected {
+        color: rgba(255, 255, 255, 0.94);
+        background: rgba(88, 166, 255, 0.09);
+    }
+
+    .target-row.connected {
+        background: rgba(126, 231, 135, 0.045);
+    }
+
+    .target-row input {
+        width: 13px;
+        height: 13px;
+        flex: 0 0 auto;
+        accent-color: #58a6ff;
+    }
+
+    .target-main {
+        min-width: 0;
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .target-name,
+    .target-description {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .target-name {
+        font-size: 0.76rem;
+        font-weight: 560;
+    }
+
+    .target-description {
+        color: rgba(255, 255, 255, 0.34);
+        font-size: 0.64rem;
+    }
+
+    .target-state.connected {
+        color: #7ee787;
+        font-size: 0.62rem;
+    }
+
+    .target-state.pending {
+        color: #d29922;
+    }
+
+    .targets-footer {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 46px;
+        padding: 7px 9px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.4);
+        font-size: 0.68rem;
+    }
+
+    .panel-empty,
+    .panel-error {
+        padding: 14px 12px;
+        color: rgba(255, 255, 255, 0.42);
+        font-size: 0.72rem;
+    }
+
+    .panel-error {
+        color: #ff7b72;
+    }
+
+    .connect-error {
+        margin: 7px 9px 0;
+        padding: 6px 8px;
+        border: 1px solid rgba(248, 81, 73, 0.28);
+        border-radius: 5px;
+        color: #ff7b72;
+        background: rgba(248, 81, 73, 0.07);
+        font-size: 0.68rem;
+    }
+
+    .terminal-stack {
+        position: relative;
+        min-width: 0;
+        min-height: 0;
+        flex: 1 1 auto;
+        overflow: hidden;
+    }
+
+    .workspace-empty {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        color: rgba(255, 255, 255, 0.42);
+        text-align: center;
+    }
+
+    .workspace-empty strong {
+        color: rgba(255, 255, 255, 0.78);
+    }
+
+    .workspace-empty span {
+        font-size: 0.78rem;
+    }
+
+    .metrics-panel :global(.metrics-shell) {
+        flex: 1 1 auto;
+        min-height: 0;
+    }
+
+    .footer-status,
+    .footer-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .footer-status {
+        min-width: 0;
+        color: rgba(255, 255, 255, 0.42);
+        font-size: 0.7rem;
+    }
+
+    .footer-status strong {
+        max-width: 240px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: rgba(255, 255, 255, 0.72);
     }
 
     .font-size-row {
-        padding: 0.25rem 1rem;
         min-width: 220px;
+        padding: 0.25rem 1rem;
         pointer-events: none;
+    }
 
-        button {
-            pointer-events: initial;
-        }
+    .font-size-row button {
+        pointer-events: initial;
     }
 
     .theme-check {
@@ -607,4 +1273,37 @@
         width: 1.25rem;
     }
 
+    @media (max-width: 1100px) {
+        .targets-panel,
+        .metrics-panel {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            z-index: 30;
+            box-shadow: 0 0 28px rgba(0, 0, 0, 0.38);
+        }
+
+        .targets-panel {
+            left: 0;
+        }
+
+        .metrics-panel {
+            right: 0;
+        }
+    }
+
+    @media (max-width: 700px) {
+        .targets-panel,
+        .metrics-panel {
+            width: min(86vw, 280px);
+        }
+
+        .session-tab {
+            min-width: 105px;
+        }
+
+        .footer-status span:last-child {
+            display: none;
+        }
+    }
 </style>

@@ -37,6 +37,12 @@ Rebase each downstream release onto an explicit upstream Warpgate tag. Keep down
 - The terminal theme defaults to Tokyo Night and can be switched between Tokyo Night, Catppuccin Mocha, Dracula, Nord, and Warpgate Original.
 - Theme and font-size preferences are browser-local only (`warpgateWebSSHTheme`, `warpgateWebSSHFontSize`) and do not change the Warpgate database.
 - Web SSH starts the fixed backend metrics collector automatically and keeps only the latest 60 one-second samples in browser memory for sparklines.
-- The metrics bar is intentionally compact; CPU, memory, normalized load, and root disk usage gain warning/critical emphasis, and samples older than 3.5 seconds are marked `STALE`.
-- Shell tabs default to the target name (with numbering for additional channels) and still prefer remote OSC terminal titles when available.
-- The metrics bar shows CPU, memory, network RX/TX, load, root filesystem usage, uptime, CPU count, and the selected network interface.
+- The active session metrics render in a vertical rail; CPU, memory, normalized load, and root disk usage gain warning/critical emphasis, and samples older than 3.5 seconds are marked `STALE`.
+- Top-level tabs represent server sessions; additional shell channels on one server use a secondary shell strip and still prefer remote OSC terminal titles when available.
+- The metrics rail shows CPU, memory, network RX/TX, load, root filesystem usage, uptime, CPU count, and the selected network interface.
+- Web SSH can host multiple independent target sessions in one browser workspace; every target gets its own server-created Web SSH session and authenticated WebSocket rather than sharing a shell or jump-host process.
+- The workspace layout uses a collapsible SSH target tree on the left, server session tabs across the top, the active terminal in the center, and a collapsible vertical metrics rail on the right.
+- Target checkboxes are only a browser-side batch selector; connecting still calls the normal `create_web_ssh_session` API for every target so existing target permissions, authentication, audit, and recording boundaries remain intact.
+- Metrics stay scoped to the active target session. Switching server tabs switches the metrics rail with it; background sessions retain only their own 60-sample browser history.
+- Multiple shell channels on one server remain supported and appear as a small secondary shell strip only when more than one channel exists.
+- Sidebar, metrics-rail, terminal-theme, and font-size preferences are browser-local; workspace target sessions are intentionally not persisted across page reloads.

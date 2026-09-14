@@ -23,9 +23,17 @@
         snapshot: MetricsSnapshot | null
         history: MetricsSnapshot[]
         lastSampleAt: number | null
+        layout?: 'compact' | 'rail'
     }
 
-    let { status, message, snapshot, history, lastSampleAt }: Props = $props()
+    let {
+        status,
+        message,
+        snapshot,
+        history,
+        lastSampleAt,
+        layout = 'compact',
+    }: Props = $props()
     let now = $state(Date.now())
     let clock: ReturnType<typeof setInterval> | null = null
 
@@ -167,7 +175,7 @@
     }
 </script>
 
-<div class:stale class="metrics-shell">
+<div class:stale class:rail={layout === 'rail'} class="metrics-shell">
     <div
         class="status-block"
         title={message ?? 'Agentless metrics over the current SSH session'}
@@ -476,4 +484,97 @@
             min-height: 28px;
         }
     }
+    .metrics-shell.rail {
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        margin: 0;
+        padding: 8px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+        border-radius: 0;
+        background: transparent;
+        overflow-y: auto;
+    }
+
+    .rail .status-block {
+        min-width: 0;
+        min-height: 34px;
+        padding: 3px 4px 8px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .rail .interface-label {
+        display: inline;
+        margin-left: auto;
+    }
+
+    .rail .metrics-grid {
+        display: flex;
+        flex: 0 0 auto;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .rail .metric-card {
+        width: 100%;
+        height: 72px;
+        min-height: 72px;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        grid-template-rows: auto auto 1fr;
+        column-gap: 8px;
+        align-items: baseline;
+        padding: 8px 9px;
+    }
+
+    .rail .metric-title {
+        grid-column: 1;
+        grid-row: 1;
+        font-size: 0.64rem;
+    }
+
+    .rail .metric-value {
+        grid-column: 2;
+        grid-row: 1;
+        justify-self: end;
+        font-size: 0.86rem;
+    }
+
+    .rail .metric-sub {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        margin-top: 2px;
+    }
+
+    .rail .network-value {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 0;
+        line-height: 1.25;
+    }
+
+    .rail .sparkline {
+        height: 28px;
+        bottom: 5px;
+        opacity: 0.36;
+    }
+
+    .rail .compact-card {
+        height: 54px;
+        min-height: 54px;
+        grid-template-rows: auto 1fr;
+    }
+
+    .rail .compact-card .metric-sub {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+
+    .rail .metrics-empty {
+        padding: 12px 4px;
+    }
+
 </style>
