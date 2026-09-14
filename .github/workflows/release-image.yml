@@ -1,4 +1,4 @@
-name: Docker
+name: Downstream image
 permissions: read-all
 on:
   workflow_dispatch:
