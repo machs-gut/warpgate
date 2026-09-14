@@ -3,6 +3,11 @@
 FROM rust:1.97.1-bullseye@sha256:02d78ca3f928195c2a907543de778adfd728ad7e2a24fdc6aef582b7c77842e0 AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Keep Bullseye security packages reproducible: the rolling security index can
+# briefly reference packages already removed from the live pool. This snapshot
+# matches the pinned 2026-08-03 Bullseye runtime base used below.
+RUN sed -i -E 's#https?://[^ ]+/debian-security#https://snapshot.debian.org/archive/debian-security/20260803T000000Z#g' /etc/apt/sources.list
+RUN printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99warpgate-snapshot
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
@@ -24,13 +29,18 @@ WORKDIR /opt/warpgate
 RUN just npm ci \
     && just openapi \
     && just npm run build \
-    && cargo build --features mysql,postgres,rdp-openssl-tls --release
+    && CARGO_BUILD_JOBS=8 cargo build --features mysql,postgres,rdp-openssl-tls --release
 
 FROM debian:bullseye-20260803@sha256:99cdf7792e25416bd801861ccd8e2fb27fb527b25e8d9a8704ebc3ead2015675
 LABEL maintainer=heywoodlh
 ARG USER_ID=1000
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Keep Bullseye security packages reproducible: the rolling security index can
+# briefly reference packages already removed from the live pool. This snapshot
+# matches the pinned 2026-08-03 Bullseye runtime base used below.
+RUN sed -i -E 's#https?://[^ ]+/debian-security#https://snapshot.debian.org/archive/debian-security/20260803T000000Z#g' /etc/apt/sources.list
+RUN printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99warpgate-snapshot
 RUN <<EOF
   set -xe
   apt-get -y update -qq
