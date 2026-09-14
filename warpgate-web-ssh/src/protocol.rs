@@ -25,6 +25,31 @@ pub enum ClientMessage {
     },
     AcceptHostKey,
     RejectHostKey,
+    StartMetrics,
+    StopMetrics,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricsStatus {
+    Starting,
+    Available,
+    Unavailable,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct MetricsSnapshot {
+    pub cpu_percent: Option<f64>,
+    pub cpu_count: u32,
+    pub memory_used_bytes: u64,
+    pub memory_total_bytes: u64,
+    pub load1: f64,
+    pub rx_bytes_per_sec: Option<f64>,
+    pub tx_bytes_per_sec: Option<f64>,
+    pub network_interface: Option<String>,
+    pub disk_percent: f64,
+    pub uptime_seconds: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,5 +84,12 @@ pub enum ServerMessage {
         port: u16,
         key_type: String,
         key_base64: String,
+    },
+    MetricsStatus {
+        state: MetricsStatus,
+        message: Option<String>,
+    },
+    MetricsSnapshot {
+        snapshot: MetricsSnapshot,
     },
 }

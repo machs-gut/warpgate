@@ -17,3 +17,8 @@ Downstream release tags use `v0.28.5-linc.N`; container images are published as 
 ## Upstream sync
 
 Rebase each downstream release onto an explicit upstream Warpgate tag. Keep downstream commits small and grouped by backend metrics, Web SSH UI/themes, tests, and release plumbing.
+
+## Build policy
+
+- Run Rust, frontend, and container image builds on `bom-wk01`; do not run compilation workloads on Kubernetes control-plane nodes such as `nue-cp02`.
+- Control-plane nodes are limited to lightweight Git/deployment orchestration and verification commands.

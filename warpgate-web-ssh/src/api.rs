@@ -11,7 +11,7 @@ use warpgate_common_http::SessionKeepalive;
 use warpgate_common_http::auth::AuthenticatedRequestContext;
 
 use crate::manager::WebSshClientManager;
-use crate::protocol::{ClientMessage, ServerMessage};
+use crate::protocol::{ClientMessage, MetricsStatus, ServerMessage};
 use crate::session::WebSshSession;
 
 #[handler]
@@ -143,6 +143,25 @@ async fn handle_client_message(
                 let _ = pending.reply.send(false);
             }
             None
+        }
+        ClientMessage::StartMetrics => {
+            session.start_metrics().await;
+            let state = if session.metrics_available().await {
+                MetricsStatus::Available
+            } else {
+                MetricsStatus::Starting
+            };
+            Some(ServerMessage::MetricsStatus {
+                state,
+                message: None,
+            })
+        }
+        ClientMessage::StopMetrics => {
+            session.stop_metrics().await;
+            Some(ServerMessage::MetricsStatus {
+                state: MetricsStatus::Disabled,
+                message: None,
+            })
         }
     }
 }

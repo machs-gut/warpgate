@@ -16,7 +16,7 @@ use warpgate_db_entities::Target::TargetKind;
 use warpgate_protocol_ssh::{RCCommand, RCEvent, RCState, RemoteClient, resolve_ssh_chain};
 use warpgate_web_clients_common::{ClientManager, SessionRemover, WebSessionHandle};
 
-use crate::protocol::ServerMessage;
+use crate::protocol::{MetricsStatus, ServerMessage};
 use crate::session::WebSshSession;
 
 const MAX_SESSIONS_PER_USER: usize = 100;
@@ -160,29 +160,92 @@ fn spawn_event_loop(
                                 .await;
                         }
                         RCEvent::Output(channel_id, data) => {
-                            session.on_output(channel_id, &data).await;
-                            session
-                                .push(ServerMessage::Output {
-                                    channel_id,
-                                    data,
-                                })
-                                .await;
+                            if session.is_metrics_channel(channel_id).await {
+                                let decoded = session.on_metrics_output(channel_id, &data).await;
+                                if decoded.became_available {
+                                    session
+                                        .push(ServerMessage::MetricsStatus {
+                                            state: MetricsStatus::Available,
+                                            message: None,
+                                        })
+                                        .await;
+                                }
+                                for snapshot in decoded.snapshots {
+                                    session
+                                        .push(ServerMessage::MetricsSnapshot { snapshot })
+                                        .await;
+                                }
+                            } else {
+                                session.on_output(channel_id, &data).await;
+                                session
+                                    .push(ServerMessage::Output {
+                                        channel_id,
+                                        data,
+                                    })
+                                    .await;
+                            }
                         }
                         RCEvent::Eof(channel_id) => {
-                            session.push(ServerMessage::Eof { channel_id }).await;
+                            if !session.is_metrics_channel(channel_id).await {
+                                session.push(ServerMessage::Eof { channel_id }).await;
+                            }
                         }
-
                         RCEvent::ExitStatus(channel_id, code) => {
-                            session
-                                .push(ServerMessage::ExitStatus { channel_id, code })
-                                .await;
+                            if !session.is_metrics_channel(channel_id).await {
+                                session
+                                    .push(ServerMessage::ExitStatus { channel_id, code })
+                                    .await;
+                            }
                         }
-                        RCEvent::Close(channel_id) |
+                        RCEvent::Close(channel_id) => {
+                            if let Some(was_stopping) =
+                                session.finish_metrics_channel(channel_id).await
+                            {
+                                if !was_stopping {
+                                    session
+                                        .push(ServerMessage::MetricsStatus {
+                                            state: MetricsStatus::Unavailable,
+                                            message: Some("Metrics collector exited".to_owned()),
+                                        })
+                                        .await;
+                                }
+                            } else {
+                                session.end_channel(channel_id).await;
+                                session
+                                    .push(ServerMessage::ChannelClosed { channel_id })
+                                    .await;
+                            }
+                        }
                         RCEvent::ChannelFailure(channel_id) => {
-                            session.end_channel(channel_id).await;
-                            session
-                                .push(ServerMessage::ChannelClosed { channel_id })
-                                .await;
+                            if let Some(was_stopping) =
+                                session.finish_metrics_channel(channel_id).await
+                            {
+                                if !was_stopping {
+                                    session
+                                        .push(ServerMessage::MetricsStatus {
+                                            state: MetricsStatus::Unavailable,
+                                            message: Some(
+                                                "Metrics collector channel failed".to_owned(),
+                                            ),
+                                        })
+                                        .await;
+                                }
+                            } else {
+                                session.end_channel(channel_id).await;
+                                session
+                                    .push(ServerMessage::ChannelClosed { channel_id })
+                                    .await;
+                            }
+                        }
+                        RCEvent::ExtendedData { channel, data, .. } => {
+                            if session.is_metrics_channel(channel).await {
+                                warn!(
+                                    %session_id,
+                                    channel=%channel,
+                                    bytes=data.len(),
+                                    "Metrics collector wrote to stderr"
+                                );
+                            }
                         }
                         RCEvent::Error(e) => {
                             session

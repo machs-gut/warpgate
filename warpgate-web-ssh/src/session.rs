@@ -16,6 +16,7 @@ use warpgate_protocol_ssh::{
 };
 use warpgate_web_clients_common::{ManagedSession, Sheddable, WebSession};
 
+use crate::metrics::{METRICS_COLLECTOR_COMMAND, MetricsCollectorState, MetricsDecodeResult};
 use crate::protocol::ServerMessage;
 
 /// Terminal output ring: the whole byte stream is droppable, so an idle/slow client's backlog
@@ -41,6 +42,7 @@ pub struct WebSshSession {
     recordings: Arc<SessionRecordings>,
     channel_audits: Arc<Mutex<HashMap<Uuid, ChannelAudit>>>,
     pending_host_key: Arc<Mutex<Option<PendingHostKey>>>,
+    metrics: Arc<Mutex<MetricsCollectorState>>,
 }
 
 impl WebSshSession {
@@ -71,6 +73,7 @@ impl WebSshSession {
             recordings,
             channel_audits: Arc::new(Mutex::new(HashMap::new())),
             pending_host_key: Arc::new(Mutex::new(None)),
+            metrics: Arc::new(Mutex::new(MetricsCollectorState::default())),
         }
     }
 
@@ -80,6 +83,51 @@ impl WebSshSession {
 
     pub async fn take_pending_host_key(&self) -> Option<PendingHostKey> {
         self.pending_host_key.lock().await.take()
+    }
+
+    pub async fn start_metrics(&self) -> bool {
+        let channel_id = Uuid::new_v4();
+        {
+            let mut metrics = self.metrics.lock().await;
+            if !metrics.start(channel_id) {
+                return false;
+            }
+        }
+
+        info!(session=%self.id(), channel=%channel_id, "Opening metrics channel");
+        self.command(RCCommand::Channel(channel_id, ChannelOperation::OpenShell));
+        self.command(RCCommand::Channel(
+            channel_id,
+            ChannelOperation::RequestExec(METRICS_COLLECTOR_COMMAND.to_owned()),
+        ));
+        true
+    }
+
+    pub async fn metrics_available(&self) -> bool {
+        self.metrics.lock().await.is_available()
+    }
+
+    pub async fn stop_metrics(&self) -> bool {
+        let channel_id = self.metrics.lock().await.request_stop();
+        if let Some(channel_id) = channel_id {
+            self.close_channel(channel_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub async fn is_metrics_channel(&self, channel_id: Uuid) -> bool {
+        self.metrics.lock().await.is_channel(channel_id)
+    }
+
+    pub async fn on_metrics_output(&self, channel_id: Uuid, data: &[u8]) -> MetricsDecodeResult {
+        self.metrics.lock().await.feed(channel_id, data)
+    }
+
+    /// Finish a metrics channel. Returns whether the channel was stopped intentionally.
+    pub async fn finish_metrics_channel(&self, channel_id: Uuid) -> Option<bool> {
+        self.metrics.lock().await.finish(channel_id)
     }
 
     async fn start_recording(&self, channel_id: Uuid) -> Option<TerminalRecorder> {
