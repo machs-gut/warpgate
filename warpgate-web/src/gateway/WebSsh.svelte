@@ -132,6 +132,7 @@
     let metricsStatusMessage = $state<string | null>(null)
     let metricsSnapshot = $state<MetricsSnapshot | null>(null)
     let metricsHistory: MetricsSnapshot[] = $state([])
+    let metricsLastSampleAt = $state<number | null>(null)
 
     $effect(() => {
         localStorage.warpgateWebSSHFontSize = String(fontSize)
@@ -234,9 +235,21 @@
                 metricsStatus = 'available'
                 metricsStatusMessage = null
                 metricsSnapshot = msg.snapshot
+                metricsLastSampleAt = Date.now()
                 metricsHistory = [...metricsHistory, msg.snapshot].slice(-60)
                 break
         }
+    }
+
+    function channelDisplayLabel(id: string, channel: ChannelState): string {
+        const terminalTitle = channel.terminalTitle?.trim()
+        if (terminalTitle) return terminalTitle
+
+        const targetName = sessionInfo?.targetName
+        if (!targetName) return channel.label
+
+        const index = channelOrder.indexOf(id)
+        return index > 0 ? `${targetName} · ${index + 1}` : targetName
     }
 
     function openChannel(id: string) {
@@ -344,7 +357,7 @@
                     onTitleChange={title => {
                         channels.set(id, {
                             ...channel,
-                            terminalTitle: title,
+                            terminalTitle: title.trim() || undefined,
                         })
                     }}
                 />
@@ -358,6 +371,7 @@
             message={metricsStatusMessage}
             snapshot={metricsSnapshot}
             history={metricsHistory}
+            lastSampleAt={metricsLastSampleAt}
         />
     {/if}
 
@@ -386,9 +400,9 @@
                             onclick={() => switchToChannel(id)}
                             onkeydown={e => e.key === 'Enter' && switchToChannel(id)}
                         >
-                            <span class="label"
-                                >{ch.terminalTitle ?? ch.label}</span
-                            >
+                            <span class="label">
+                                {channelDisplayLabel(id, ch)}
+                            </span>
                             <button
                                 type="button"
                                 class="btn btn-link btn-sm close-button"

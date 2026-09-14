@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { onDestroy, onMount } from 'svelte'
+
     interface MetricsSnapshot {
         cpu_percent: number | null
         cpu_count: number
@@ -13,15 +15,29 @@
     }
 
     type MetricsStatus = 'starting' | 'available' | 'unavailable' | 'disabled'
+    type MetricSeverity = 'normal' | 'warning' | 'critical'
 
     interface Props {
         status: MetricsStatus
         message: string | null
         snapshot: MetricsSnapshot | null
         history: MetricsSnapshot[]
+        lastSampleAt: number | null
     }
 
-    let { status, message, snapshot, history }: Props = $props()
+    let { status, message, snapshot, history, lastSampleAt }: Props = $props()
+    let now = $state(Date.now())
+    let clock: ReturnType<typeof setInterval> | null = null
+
+    onMount(() => {
+        clock = setInterval(() => {
+            now = Date.now()
+        }, 1000)
+    })
+
+    onDestroy(() => {
+        if (clock !== null) clearInterval(clock)
+    })
 
     function clamp(value: number, min = 0, max = 100): number {
         return Math.min(max, Math.max(min, value))
@@ -31,6 +47,20 @@
         return value.memory_total_bytes > 0
             ? (value.memory_used_bytes / value.memory_total_bytes) * 100
             : 0
+    }
+
+    function loadPercent(value: MetricsSnapshot): number {
+        return value.cpu_count > 0 ? (value.load1 / value.cpu_count) * 100 : 0
+    }
+
+    function severity(
+        value: number,
+        warning: number,
+        critical: number,
+    ): MetricSeverity {
+        if (value >= critical) return 'critical'
+        if (value >= warning) return 'warning'
+        return 'normal'
     }
 
     function formatBytes(value: number): string {
@@ -66,7 +96,7 @@
         return finite
             .map((value, index) => {
                 const x = (index / (finite.length - 1)) * 100
-                const y = 20 - clamp((value / max) * 20, 0, 20)
+                const y = 16 - clamp((value / max) * 16, 0, 16)
                 return `${x.toFixed(2)},${y.toFixed(2)}`
             })
             .join(' ')
@@ -106,38 +136,69 @@
         ),
     )
 
+    let sampleAgeMs = $derived(
+        lastSampleAt === null ? null : Math.max(0, now - lastSampleAt),
+    )
+    let stale = $derived(
+        status === 'available' && sampleAgeMs !== null && sampleAgeMs > 3500,
+    )
+    let cpuSeverity = $derived(
+        snapshot?.cpu_percent === null || !snapshot
+            ? 'normal'
+            : severity(snapshot.cpu_percent, 70, 90),
+    )
+    let memorySeverity = $derived(
+        snapshot ? severity(memoryPercent(snapshot), 80, 90) : 'normal',
+    )
+    let loadSeverity = $derived(
+        snapshot ? severity(loadPercent(snapshot), 75, 100) : 'normal',
+    )
+    let diskSeverity = $derived(
+        snapshot ? severity(snapshot.disk_percent, 80, 90) : 'normal',
+    )
+
     function statusLabel(): string {
-        if (status === 'available') return 'Live · 1s'
-        if (status === 'starting') return 'Starting metrics…'
-        if (status === 'unavailable') return message ?? 'Metrics unavailable'
-        return 'Metrics disabled'
+        if (stale && sampleAgeMs !== null)
+            return `STALE · ${Math.floor(sampleAgeMs / 1000)}s`
+        if (status === 'available') return 'LIVE'
+        if (status === 'starting') return 'STARTING'
+        if (status === 'unavailable') return message ?? 'UNAVAILABLE'
+        return 'DISABLED'
     }
 </script>
 
-<div class="metrics-shell px-3 py-2">
-    <div class="metrics-heading d-flex align-items-center gap-2 mb-1">
+<div class:stale class="metrics-shell">
+    <div
+        class="status-block"
+        title={message ?? 'Agentless metrics over the current SSH session'}
+    >
         <span
-            class:available={status === 'available'}
+            class:available={status === 'available' && !stale}
+            class:stale
             class="status-dot"
         ></span>
         <span class="status-label">{statusLabel()}</span>
         {#if snapshot?.network_interface}
-            <span class="ms-auto interface-label"
-                >{snapshot.network_interface}</span
-            >
+            <span class="interface-label">{snapshot.network_interface}</span>
         {/if}
     </div>
+
     {#if snapshot}
         <div class="metrics-grid">
-            <div class="metric-card">
-                <div class="metric-title">CPU</div>
-                <div class="metric-value">
-                    {snapshot.cpu_percent === null ? '—' : `${snapshot.cpu_percent.toFixed(1)}%`}
-                    <span class="metric-sub">{snapshot.cpu_count} CPU</span>
-                </div>
+            <div
+                class:warning={cpuSeverity === 'warning'}
+                class:critical={cpuSeverity === 'critical'}
+                class="metric-card"
+                title="CPU utilization · warning ≥70%, critical ≥90%"
+            >
+                <span class="metric-title">CPU</span>
+                <span class="metric-value"
+                    >{snapshot.cpu_percent === null ? '—' : `${snapshot.cpu_percent.toFixed(1)}%`}</span
+                >
+                <span class="metric-sub">{snapshot.cpu_count}C</span>
                 <svg
                     class="sparkline"
-                    viewBox="0 0 100 20"
+                    viewBox="0 0 100 16"
                     preserveAspectRatio="none"
                     aria-hidden="true"
                 >
@@ -145,18 +206,23 @@
                 </svg>
             </div>
 
-            <div class="metric-card">
-                <div class="metric-title">MEM</div>
-                <div class="metric-value">
-                    {memoryPercent(snapshot).toFixed(1)}%
-                    <span class="metric-sub">
-                        {formatBytes(snapshot.memory_used_bytes)}
-                        / {formatBytes(snapshot.memory_total_bytes)}
-                    </span>
-                </div>
+            <div
+                class:warning={memorySeverity === 'warning'}
+                class:critical={memorySeverity === 'critical'}
+                class="metric-card"
+                title={`Memory · ${formatBytes(snapshot.memory_used_bytes)} / ${formatBytes(snapshot.memory_total_bytes)} · warning ≥80%, critical ≥90%`}
+            >
+                <span class="metric-title">MEM</span>
+                <span class="metric-value"
+                    >{memoryPercent(snapshot).toFixed(1)}%</span
+                >
+                <span class="metric-sub"
+                    >{formatBytes(snapshot.memory_used_bytes)}
+                    / {formatBytes(snapshot.memory_total_bytes)}</span
+                >
                 <svg
                     class="sparkline"
-                    viewBox="0 0 100 20"
+                    viewBox="0 0 100 16"
                     preserveAspectRatio="none"
                     aria-hidden="true"
                 >
@@ -164,15 +230,20 @@
                 </svg>
             </div>
 
-            <div class="metric-card network-card">
-                <div class="metric-title">NET</div>
-                <div class="metric-value network-value">
-                    <span>↓ {formatRate(snapshot.rx_bytes_per_sec)}</span>
-                    <span>↑ {formatRate(snapshot.tx_bytes_per_sec)}</span>
-                </div>
+            <div
+                class="metric-card network-card"
+                title={snapshot.network_interface ? `Network interface: ${snapshot.network_interface}` : 'Network throughput'}
+            >
+                <span class="metric-title">NET</span>
+                <span class="metric-value network-value"
+                    ><span>↓ {formatRate(snapshot.rx_bytes_per_sec)}</span
+                    ><span
+                        >↑ {formatRate(snapshot.tx_bytes_per_sec)}</span
+                    ></span
+                >
                 <svg
                     class="sparkline"
-                    viewBox="0 0 100 20"
+                    viewBox="0 0 100 16"
                     preserveAspectRatio="none"
                     aria-hidden="true"
                 >
@@ -180,126 +251,204 @@
                     <polyline class="tx-line" points={txPoints}></polyline>
                 </svg>
             </div>
-            <div class="metric-card compact-card">
-                <div class="metric-title">LOAD</div>
-                <div class="metric-value">{snapshot.load1.toFixed(2)}</div>
+
+            <div
+                class:warning={loadSeverity === 'warning'}
+                class:critical={loadSeverity === 'critical'}
+                class="metric-card compact-card"
+                title="1-minute load normalized by logical CPU count · warning ≥75%, critical ≥100%"
+            >
+                <span class="metric-title">LOAD</span>
+                <span class="metric-value"
+                    >{snapshot.load1.toFixed(2)}
+                    / {snapshot.cpu_count}C</span
+                >
+                <span class="metric-sub"
+                    >· {loadPercent(snapshot).toFixed(0)}%</span
+                >
             </div>
 
-            <div class="metric-card compact-card">
-                <div class="metric-title">DISK /</div>
-                <div class="metric-value">
-                    {snapshot.disk_percent.toFixed(1)}%
-                </div>
+            <div
+                class:warning={diskSeverity === 'warning'}
+                class:critical={diskSeverity === 'critical'}
+                class="metric-card compact-card"
+                title="Root filesystem usage · warning ≥80%, critical ≥90%"
+            >
+                <span class="metric-title">DISK /</span>
+                <span class="metric-value"
+                    >{snapshot.disk_percent.toFixed(1)}%</span
+                >
             </div>
 
-            <div class="metric-card compact-card">
-                <div class="metric-title">UP</div>
-                <div class="metric-value">
-                    {formatUptime(snapshot.uptime_seconds)}
-                </div>
+            <div class="metric-card compact-card" title="Remote host uptime">
+                <span class="metric-title">UP</span>
+                <span class="metric-value"
+                    >{formatUptime(snapshot.uptime_seconds)}</span
+                >
             </div>
         </div>
     {:else}
-        <div class="metrics-empty">Waiting for the first metrics sample…</div>
+        <div class="metrics-empty">Waiting for metrics…</div>
     {/if}
 </div>
 
 <style lang="scss">
     .metrics-shell {
         flex-shrink: 0;
-        margin: 0 10px;
-        border-radius: 10px;
+        display: flex;
+        align-items: stretch;
+        gap: 6px;
+        min-height: 36px;
+        margin: 6px 10px 0;
+        padding: 4px 6px;
+        border-radius: 9px;
         background: rgba(0, 0, 0, 0.38);
         color: rgba(255, 255, 255, 0.9);
         font-variant-numeric: tabular-nums;
     }
 
-    .metrics-heading {
-        min-height: 18px;
+    .metrics-shell.stale .metrics-grid {
+        opacity: 0.52;
+        filter: saturate(0.35);
+    }
+
+    .status-block {
+        min-width: 82px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 0 5px;
     }
 
     .status-dot {
         width: 7px;
         height: 7px;
+        flex: 0 0 auto;
         border-radius: 50%;
         background: rgba(255, 255, 255, 0.35);
     }
 
     .status-dot.available {
         background: #7ee787;
-        box-shadow: 0 0 8px rgba(126, 231, 135, 0.45);
+        box-shadow: 0 0 7px rgba(126, 231, 135, 0.45);
+    }
+
+    .status-dot.stale {
+        background: #d29922;
+        box-shadow: 0 0 7px rgba(210, 153, 34, 0.38);
     }
 
     .status-label,
     .interface-label,
     .metrics-empty,
     .metric-sub {
-        color: rgba(255, 255, 255, 0.58);
-        font-size: 0.72rem;
+        color: rgba(255, 255, 255, 0.56);
+        font-size: 0.66rem;
+    }
+
+    .status-label {
+        font-weight: 700;
+        letter-spacing: 0.04em;
     }
 
     .interface-label {
+        display: none;
         font-family: monospace;
     }
 
+    .metrics-empty {
+        display: flex;
+        align-items: center;
+    }
+
     .metrics-grid {
+        min-width: 0;
+        flex: 1 1 auto;
         display: grid;
-        grid-template-columns: minmax(130px, 1.1fr) minmax(170px, 1.3fr) minmax(220px, 1.7fr) repeat(3, minmax(74px, 0.55fr));
-        gap: 8px;
+        grid-template-columns: minmax(118px, 1fr) minmax(185px, 1.35fr) minmax(220px, 1.6fr) minmax(145px, 1fr) minmax(82px, 0.6fr) minmax(82px, 0.6fr);
+        gap: 5px;
     }
 
     .metric-card {
         min-width: 0;
-        height: 48px;
-        padding: 5px 8px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 7px;
         border: 1px solid rgba(255, 255, 255, 0.07);
-        border-radius: 7px;
+        border-radius: 6px;
         background: rgba(255, 255, 255, 0.035);
         position: relative;
         overflow: hidden;
+        transition: border-color 120ms ease, background 120ms ease;
     }
 
-    .metric-title {
-        position: relative;
-        z-index: 2;
-        color: rgba(255, 255, 255, 0.48);
-        font-size: 0.65rem;
-        font-weight: 700;
-        letter-spacing: 0.06em;
+    .metric-card.warning {
+        border-color: rgba(210, 153, 34, 0.52);
+        background: rgba(210, 153, 34, 0.11);
     }
 
-    .metric-value {
+    .metric-card.critical {
+        border-color: rgba(248, 81, 73, 0.62);
+        background: rgba(248, 81, 73, 0.14);
+    }
+
+    .metric-card.warning .metric-value,
+    .metric-card.warning .metric-title {
+        color: #e3b341;
+    }
+
+    .metric-card.critical .metric-value,
+    .metric-card.critical .metric-title {
+        color: #ff7b72;
+    }
+
+    .metric-title,
+    .metric-value,
+    .metric-sub {
         position: relative;
         z-index: 2;
-        margin-top: 1px;
-        font-size: 0.88rem;
-        font-weight: 600;
         white-space: nowrap;
     }
 
+    .metric-title {
+        color: rgba(255, 255, 255, 0.46);
+        font-size: 0.62rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+    }
+
+    .metric-value {
+        font-size: 0.78rem;
+        font-weight: 650;
+    }
+
     .metric-sub {
-        margin-left: 0.35rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
         font-weight: 400;
     }
 
     .network-value {
         display: flex;
-        gap: 0.65rem;
-        font-size: 0.8rem;
+        gap: 0.55rem;
+        font-size: 0.74rem;
     }
 
     .sparkline {
         position: absolute;
         inset: auto 0 0 0;
         width: 100%;
-        height: 23px;
-        opacity: 0.33;
+        height: 16px;
+        opacity: 0.28;
+        pointer-events: none;
     }
 
     .sparkline polyline {
         fill: none;
         stroke: currentColor;
-        stroke-width: 1.4;
+        stroke-width: 1.2;
         vector-effect: non-scaling-stroke;
     }
 
@@ -308,18 +457,23 @@
         opacity: 0.6;
     }
 
-    .compact-card .metric-value {
-        margin-top: 4px;
+    @media (min-width: 1450px) {
+        .interface-label {
+            display: inline;
+        }
     }
 
     @media (max-width: 1100px) {
+        .metrics-shell {
+            align-items: flex-start;
+        }
+
         .metrics-grid {
             grid-template-columns: repeat(3, minmax(0, 1fr));
         }
 
-        .compact-card {
-            height: 40px;
+        .status-block {
+            min-height: 28px;
         }
     }
-
 </style>

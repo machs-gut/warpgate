@@ -37,4 +37,6 @@ Rebase each downstream release onto an explicit upstream Warpgate tag. Keep down
 - The terminal theme defaults to Tokyo Night and can be switched between Tokyo Night, Catppuccin Mocha, Dracula, Nord, and Warpgate Original.
 - Theme and font-size preferences are browser-local only (`warpgateWebSSHTheme`, `warpgateWebSSHFontSize`) and do not change the Warpgate database.
 - Web SSH starts the fixed backend metrics collector automatically and keeps only the latest 60 one-second samples in browser memory for sparklines.
+- The metrics bar is intentionally compact; CPU, memory, normalized load, and root disk usage gain warning/critical emphasis, and samples older than 3.5 seconds are marked `STALE`.
+- Shell tabs default to the target name (with numbering for additional channels) and still prefer remote OSC terminal titles when available.
 - The metrics bar shows CPU, memory, network RX/TX, load, root filesystem usage, uptime, CPU count, and the selected network interface.
