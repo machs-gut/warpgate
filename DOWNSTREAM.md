@@ -20,7 +20,10 @@ Rebase each downstream release onto an explicit upstream Warpgate tag. Keep down
 
 ## Build policy
 
-- Run Rust, frontend, and container image builds on `bom-wk01`; do not run compilation workloads on Kubernetes control-plane nodes such as `nue-cp02`.
+- Local Rust, frontend, and container image builds belong on `bom-wk01`; do not run compilation workloads on Kubernetes control-plane nodes such as `nue-cp02`.
+- Release images are built on GitHub Hosted Runners, not on cluster nodes.
+- `linux/amd64` uses the normal `release` profile with 8 Cargo jobs.
+- `linux/arm64` uses the upstream `release-no-lto` profile with 2 Cargo jobs to stay within GitHub ARM runner memory limits; functionality is identical, only link-time optimization is disabled for that architecture.
 - Control-plane nodes are limited to lightweight Git/deployment orchestration and verification commands.
 
 ## Web SSH UI

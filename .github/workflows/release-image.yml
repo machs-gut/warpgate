@@ -3,7 +3,6 @@ permissions: read-all
 on:
   workflow_dispatch:
   push:
-    branches: [ 'main' ]
     tags: [ 'v*.*.*-linc.*' ]
   pull_request:
     branches: [ 'main' ]
@@ -26,9 +25,13 @@ jobs:
           - os: ubuntu-24.04
             docker-platform: linux/amd64
             matrix-id: amd64
+            cargo-build-jobs: 8
+            cargo-build-profile: release
           - os: ubuntu-24.04-arm
             docker-platform: linux/arm64
             matrix-id: arm64
+            cargo-build-jobs: 2
+            cargo-build-profile: release-no-lto
 
     permissions:
       contents: read
@@ -73,6 +76,9 @@ jobs:
           push: false
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ matrix.docker-platform }}
+          build-args: |
+            CARGO_BUILD_JOBS=${{ matrix.cargo-build-jobs }}
+            CARGO_BUILD_PROFILE=${{ matrix.cargo-build-profile }}
           cache-from: type=gha,scope=build-${{ matrix.docker-platform }}
 
       - name: Build and push Docker image
@@ -85,6 +91,9 @@ jobs:
           push: true
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ matrix.docker-platform }}
+          build-args: |
+            CARGO_BUILD_JOBS=${{ matrix.cargo-build-jobs }}
+            CARGO_BUILD_PROFILE=${{ matrix.cargo-build-profile }}
           cache-from: type=gha,scope=build-${{ matrix.docker-platform }}
           cache-to: type=gha,scope=build-${{ matrix.docker-platform }}
           outputs: type=image,"name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",push-by-digest=true,name-canonical=true,push=true

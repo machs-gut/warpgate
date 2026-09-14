@@ -26,10 +26,18 @@ ENV SOURCE_DATE_EPOCH=0
 
 WORKDIR /opt/warpgate
 
+ARG CARGO_BUILD_JOBS=8
+ARG CARGO_BUILD_PROFILE=release
+
+# Keep frontend generation in its own cacheable layer so Rust build retries do
+# not need to repeat npm/OpenAPI work.
 RUN just npm ci \
     && just openapi \
-    && just npm run build \
-    && CARGO_BUILD_JOBS=8 cargo build --features mysql,postgres,rdp-openssl-tls --release
+    && just npm run build
+
+RUN CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" \
+    cargo build --features mysql,postgres,rdp-openssl-tls --profile "${CARGO_BUILD_PROFILE}" \
+    && cp "target/${CARGO_BUILD_PROFILE}/warpgate" /opt/warpgate/warpgate-bin
 
 FROM debian:bullseye-20260803@sha256:99cdf7792e25416bd801861ccd8e2fb27fb527b25e8d9a8704ebc3ead2015675
 LABEL maintainer=heywoodlh
@@ -53,7 +61,7 @@ EOF
 # RUN adduser warpgate --system --home /data
 RUN adduser warpgate --disabled-password --gecos "" --uid ${USER_ID} --home /data --shell /usr/sbin/nologin
 
-COPY --from=build /opt/warpgate/target/release/warpgate /usr/local/bin/warpgate
+COPY --from=build /opt/warpgate/warpgate-bin /usr/local/bin/warpgate
 
 VOLUME /data
 
