@@ -121,6 +121,8 @@
         },
         onMessage: data =>
             onMessage(JSON.parse(data as string) as ServerMessage),
+        onStateChange: (state, attempt) =>
+            onConnectionState(sessionId, state, attempt),
     })
 
     function send(msg: ClientMessage) {
@@ -149,7 +151,7 @@
     function onMessage(msg: ServerMessage) {
         switch (msg.type) {
             case 'connection_state':
-                ws.state = msg.state
+                ws.updateState(msg.state)
                 break
             case 'channel_opened':
                 openChannel(msg.channel_id)
@@ -180,7 +182,7 @@
                 break
             }
             case 'error':
-                ws.state = ConnectionState.Error
+                ws.updateState(ConnectionState.Error)
                 connectionError = msg.message
                 onError(sessionId, msg.message, false)
                 break
@@ -190,6 +192,7 @@
             case 'metrics_status':
                 metricsStatus = msg.state
                 metricsStatusMessage = msg.message
+                reportMetrics()
                 break
             case 'metrics_snapshot':
                 metricsStatus = 'available'
@@ -197,8 +200,19 @@
                 metricsSnapshot = msg.snapshot
                 metricsLastSampleAt = Date.now()
                 metricsHistory = [...metricsHistory, msg.snapshot].slice(-60)
+                reportMetrics()
                 break
         }
+    }
+
+    function reportMetrics() {
+        onMetrics(sessionId, {
+            status: metricsStatus,
+            message: metricsStatusMessage,
+            snapshot: metricsSnapshot,
+            history: metricsHistory,
+            lastSampleAt: metricsLastSampleAt,
+        })
     }
 
     function writeTerminalOutput(id: string, data: Uint8Array) {
@@ -292,20 +306,6 @@
             // The session may already have expired server-side.
         }
     }
-    $effect(() => {
-        onConnectionState(sessionId, ws.state, ws.attempt)
-    })
-
-    $effect(() => {
-        onMetrics(sessionId, {
-            status: metricsStatus,
-            message: metricsStatusMessage,
-            snapshot: metricsSnapshot,
-            history: metricsHistory,
-            lastSampleAt: metricsLastSampleAt,
-        })
-    })
-
     $effect(() => {
         if (!active) return
         requestAnimationFrame(() => fit())

@@ -24,7 +24,6 @@
     import ConnectionInstructions from 'common/ConnectionInstructions.svelte'
     import { handleReauthError } from 'common/reauth'
     import { onMount, tick } from 'svelte'
-    import { SvelteMap } from 'svelte/reactivity'
     import Fa from 'svelte-fa'
     import { loadTheme } from 'theme'
     import {
@@ -78,22 +77,21 @@
 
     // svelte-ignore state_referenced_locally
     const initialSessionId = params.sessionId
-    let connections = new SvelteMap<string, WorkspaceConnection>()
-    let connectionOrder: string[] = $state([initialSessionId])
+    let connections: WorkspaceConnection[] = $state([
+        {
+            sessionId: initialSessionId,
+            targetId: null,
+            targetName: 'Loading…',
+            targetKind: TargetKind.Ssh,
+            state: ConnectionState.Connecting,
+            attempt: 0,
+            metrics: emptyMetrics(),
+            error: null,
+            notFound: false,
+        },
+    ])
     let activeSessionId: string | null = $state(initialSessionId)
     const panes: Record<string, WebSshConnection> = {}
-
-    connections.set(initialSessionId, {
-        sessionId: initialSessionId,
-        targetId: null,
-        targetName: 'Loading…',
-        targetKind: TargetKind.Ssh,
-        state: ConnectionState.Connecting,
-        attempt: 0,
-        metrics: emptyMetrics(),
-        error: null,
-        notFound: false,
-    })
 
     let sshTargets: TargetSnapshot[] = $state([])
     let targetsLoading = $state(true)
@@ -131,11 +129,15 @@
     let showInstructions = $state(false)
 
     let activeConnection = $derived(
-        activeSessionId ? (connections.get(activeSessionId) ?? null) : null,
+        activeSessionId
+            ? (connections.find(
+                  connection => connection.sessionId === activeSessionId,
+              ) ?? null)
+            : null,
     )
-    let connectedTargetIds = $derived.by(() =>
-        connectionOrder
-            .map(id => connections.get(id)?.targetId)
+    let connectedTargetIds = $derived(
+        connections
+            .map(connection => connection.targetId)
             .filter((id): id is string => !!id),
     )
     let filteredTargets = $derived.by(() => {
@@ -193,23 +195,31 @@
         fontSize = Math.max(FONT_SIZE_MIN, fontSize - FONT_SIZE_STEP)
     }
 
+    function connectionBySessionId(sessionId: string) {
+        return connections.find(
+            connection => connection.sessionId === sessionId,
+        )
+    }
+
     function updateConnection(
         sessionId: string,
         patch: Partial<WorkspaceConnection>,
     ) {
-        const current = connections.get(sessionId)
+        const index = connections.findIndex(
+            connection => connection.sessionId === sessionId,
+        )
+        if (index < 0) return
+        const current = connections[index]
         if (!current) return
-        connections.set(sessionId, { ...current, ...patch })
+        connections[index] = { ...current, ...patch }
     }
 
     function connectionForTarget(targetId: string) {
-        return connectionOrder
-            .map(id => connections.get(id))
-            .find(connection => connection?.targetId === targetId)
+        return connections.find(connection => connection.targetId === targetId)
     }
 
     function reconcileTargetId(sessionId: string) {
-        const connection = connections.get(sessionId)
+        const connection = connectionBySessionId(sessionId)
         if (!connection || connection.targetId || !connection.targetName) return
         const matches = sshTargets.filter(
             target =>
@@ -273,8 +283,7 @@
             error: null,
             notFound: false,
         }
-        connections.set(sessionId, connection)
-        connectionOrder = [...connectionOrder, sessionId]
+        connections = [...connections, connection]
         return connection
     }
 
@@ -328,12 +337,13 @@
 
     async function closeSession(sessionId: string) {
         await panes[sessionId]?.disconnect()
-        connections.delete(sessionId)
         delete panes[sessionId]
-        connectionOrder = connectionOrder.filter(id => id !== sessionId)
+        connections = connections.filter(
+            connection => connection.sessionId !== sessionId,
+        )
         if (activeSessionId === sessionId) {
             const nextSessionId =
-                connectionOrder[connectionOrder.length - 1] ?? null
+                connections[connections.length - 1]?.sessionId ?? null
             activeSessionId = nextSessionId
             if (nextSessionId) {
                 await tick()
@@ -343,12 +353,11 @@
     }
 
     async function disconnectAll() {
-        for (const sessionId of [...connectionOrder]) {
-            await panes[sessionId]?.disconnect()
-            connections.delete(sessionId)
-            delete panes[sessionId]
+        for (const connection of [...connections]) {
+            await panes[connection.sessionId]?.disconnect()
+            delete panes[connection.sessionId]
         }
-        connectionOrder = []
+        connections = []
         activeSessionId = null
     }
     function toggleGroup(groupId: string) {
@@ -385,12 +394,12 @@
         targetsLoading = true
         targetLoadError = null
         try {
-            const targets = await api.getTargets({})
+            const targets = await api.getTargets({ search: '' })
             sshTargets = targets.filter(
                 target => target.kind === TargetKind.Ssh,
             )
-            for (const sessionId of connectionOrder)
-                reconcileTargetId(sessionId)
+            for (const connection of connections)
+                reconcileTargetId(connection.sessionId)
         } catch (err) {
             targetLoadError =
                 err instanceof Error
@@ -440,38 +449,34 @@
         </button>
 
         <div class="session-tabs">
-            {#each connectionOrder as sessionId (sessionId)}
-                {@const connection = connections.get(sessionId)}
-                {#if connection}
-                    <!-- biome-ignore lint/a11y/useSemanticElements: composite tab -->
-                    <div
-                        class="session-tab"
-                        class:active={sessionId === activeSessionId}
-                        role="button"
-                        tabindex="0"
-                        onclick={() => switchSession(sessionId)}
-                        onkeydown={e =>
+            {#each connections as connection (connection.sessionId)}
+                {@const sessionId = connection.sessionId}
+                <!-- biome-ignore lint/a11y/useSemanticElements: composite tab -->
+                <div
+                    class="session-tab"
+                    class:active={sessionId === activeSessionId}
+                    role="button"
+                    tabindex="0"
+                    onclick={() => switchSession(sessionId)}
+                    onkeydown={e =>
                             e.key === 'Enter' && switchSession(sessionId)}
-                    >
-                        <span
-                            class="connection-dot {stateClass(connection)}"
-                        ></span>
-                        <span class="session-name"
-                            >{connection.targetName}</span
-                        >
-                        <button
-                            type="button"
-                            class="tab-close"
-                            aria-label={`Disconnect ${connection.targetName}`}
-                            onclick={e => {
+                >
+                    <span
+                        class="connection-dot {stateClass(connection)}"
+                    ></span>
+                    <span class="session-name">{connection.targetName}</span>
+                    <button
+                        type="button"
+                        class="tab-close"
+                        aria-label={`Disconnect ${connection.targetName}`}
+                        onclick={e => {
                                 e.stopPropagation()
                                 closeSession(sessionId)
                             }}
-                        >
-                            <Fa icon={faTimes} />
-                        </button>
-                    </div>
-                {/if}
+                    >
+                        <Fa icon={faTimes} />
+                    </button>
+                </div>
             {/each}
 
             <button
@@ -645,7 +650,8 @@
         {/if}
 
         <main class="terminal-stack">
-            {#each connectionOrder as sessionId (sessionId)}
+            {#each connections as connection (connection.sessionId)}
+                {@const sessionId = connection.sessionId}
                 <WebSshConnection
                     bind:this={panes[sessionId]}
                     {sessionId}
@@ -659,7 +665,7 @@
                 />
             {/each}
 
-            {#if connectionOrder.length === 0}
+            {#if connections.length === 0}
                 <div class="workspace-empty">
                     <Fa icon={faServer} size="2x" />
                     <strong>No server connected</strong>
@@ -803,7 +809,7 @@
                             Connect from your machine
                         </DropdownItem>
                     {/if}
-                    {#if connectionOrder.length > 1}
+                    {#if connections.length > 1}
                         <DropdownItem divider />
                         <DropdownItem
                             onclick={() => {
