@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   push:
     tags: [ 'v*.*.*-linc.*' ]
-  pull_request:
-    branches: [ 'main' ]
 
 env:
   REGISTRY: ghcr.io

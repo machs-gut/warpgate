@@ -26,6 +26,12 @@ Rebase each downstream release onto an explicit upstream Warpgate tag. Keep down
 - `linux/arm64` uses the upstream `release-no-lto` profile with 2 Cargo jobs to stay within GitHub ARM runner memory limits; functionality is identical, only link-time optimization is disabled for that architecture.
 - Control-plane nodes are limited to lightweight Git/deployment orchestration and verification commands.
 
+## Dependency policy
+
+- Follow dependency versions from explicit upstream Warpgate release tags; do not independently drift the downstream fork through automated version-update PRs.
+- Dependabot version-update PRs are disabled for this downstream repository.
+- Security findings are reviewed separately; urgent fixes can be backported deliberately when required.
+
 ## Web SSH UI
 
 - The terminal theme defaults to Tokyo Night and can be switched between Tokyo Night, Catppuccin Mocha, Dracula, Nord, and Warpgate Original.
