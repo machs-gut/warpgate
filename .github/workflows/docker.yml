@@ -3,9 +3,10 @@ permissions: read-all
 on:
   workflow_dispatch:
   push:
+    branches: [ 'main' ]
     tags: [ 'v*.*.*-linc.*' ]
   pull_request:
-    branches: [ 'linc/**' ]
+    branches: [ 'main' ]
 
 env:
   REGISTRY: ghcr.io
