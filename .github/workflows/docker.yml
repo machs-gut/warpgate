@@ -1,17 +1,15 @@
 name: Docker
 permissions: read-all
 on:
-  schedule:
-    - cron: '25 12 * * *'
+  workflow_dispatch:
   push:
-    branches: [ '**' ]
-    tags: [ 'v*.*.*' ] # Publish semver tags as releases.
+    tags: [ 'v*.*.*-linc.*' ]
   pull_request:
-    branches: [ '**' ]
+    branches: [ 'linc/**' ]
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: warp-tech/warpgate
+  IMAGE_NAME: machs-gut/warpgate
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
