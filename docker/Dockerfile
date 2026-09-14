@@ -26,10 +26,14 @@ ENV SOURCE_DATE_EPOCH=0
 
 WORKDIR /opt/warpgate
 
-RUN just npm ci \
+ARG CARGO_BUILD_JOBS=8
+ARG RUSTC_THREADS=8
+
+RUN sed -i "s/-Zthreads=8/-Zthreads=${RUSTC_THREADS}/" .cargo/config.toml \
+    && just npm ci \
     && just openapi \
     && just npm run build \
-    && CARGO_BUILD_JOBS=8 cargo build --features mysql,postgres,rdp-openssl-tls --release
+    && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" cargo build --features mysql,postgres,rdp-openssl-tls --release
 
 FROM debian:bullseye-20260803@sha256:99cdf7792e25416bd801861ccd8e2fb27fb527b25e8d9a8704ebc3ead2015675
 LABEL maintainer=heywoodlh
