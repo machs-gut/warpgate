@@ -489,10 +489,10 @@
         height: 100%;
         min-height: 0;
         margin: 0;
-        padding: 8px;
+        padding: 6px;
         flex-direction: column;
         align-items: stretch;
-        gap: 8px;
+        gap: 6px;
         border-radius: 0;
         background: transparent;
         overflow-y: auto;
@@ -500,8 +500,8 @@
 
     .rail .status-block {
         min-width: 0;
-        min-height: 34px;
-        padding: 3px 4px 8px;
+        min-height: 28px;
+        padding: 2px 3px 6px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     }
 
@@ -514,19 +514,19 @@
         display: flex;
         flex: 0 0 auto;
         flex-direction: column;
-        gap: 8px;
+        gap: 6px;
     }
 
     .rail .metric-card {
         width: 100%;
-        height: 72px;
-        min-height: 72px;
+        height: 62px;
+        min-height: 62px;
         display: grid;
         grid-template-columns: auto 1fr;
         grid-template-rows: auto auto 1fr;
         column-gap: 8px;
         align-items: baseline;
-        padding: 8px 9px;
+        padding: 6px 8px;
     }
 
     .rail .metric-title {
@@ -557,14 +557,14 @@
     }
 
     .rail .sparkline {
-        height: 28px;
-        bottom: 5px;
+        height: 24px;
+        bottom: 4px;
         opacity: 0.36;
     }
 
     .rail .compact-card {
-        height: 54px;
-        min-height: 54px;
+        height: 46px;
+        min-height: 46px;
         grid-template-rows: auto 1fr;
     }
 

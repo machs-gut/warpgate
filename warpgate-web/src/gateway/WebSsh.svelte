@@ -34,6 +34,7 @@
     } from './lib/api'
     import { ConnectionState } from './lib/ReconnectingWebSocket.svelte'
     import { reloadServerInfo, serverInfo } from './lib/store'
+    import WebSshCommandPalette from './WebSshCommandPalette.svelte'
     import WebSshConnection from './WebSshConnection.svelte'
     import WebSshMetrics from './WebSshMetrics.svelte'
     import {
@@ -73,6 +74,16 @@
         id: string
         name: string
         targets: TargetSnapshot[]
+    }
+
+    interface CommandPaletteItem {
+        id: string
+        label: string
+        detail?: string
+        shortcut?: string
+        keywords?: string
+        disabled?: boolean
+        run: () => void | Promise<void>
     }
 
     const emptyMetrics = (): MetricsViewState => ({
@@ -160,6 +171,7 @@
     >
     let menuOpen = $state(false)
     let showInstructions = $state(false)
+    let commandPaletteOpen = $state(false)
 
     let activeConnection = $derived(
         activeSessionId
@@ -686,6 +698,87 @@
         if (activeSessionId) panes[activeSessionId]?.newShell()
     }
 
+    function openCommandPalette() {
+        menuOpen = false
+        commandPaletteOpen = true
+    }
+
+    function closeCommandPalette() {
+        commandPaletteOpen = false
+        requestAnimationFrame(() => {
+            if (activeSessionId) panes[activeSessionId]?.fit()
+        })
+    }
+
+    function toggleServersPanel() {
+        sidebarOpen = !sidebarOpen
+        fitActivePane()
+    }
+
+    function toggleMetricsPanel() {
+        metricsRailOpen = !metricsRailOpen
+        fitActivePane()
+    }
+
+    function handleGlobalShortcut(event: KeyboardEvent) {
+        const key = event.key.toLowerCase()
+        const primaryModifier = event.ctrlKey || event.metaKey
+
+        if (primaryModifier && event.shiftKey && !event.altKey && key === 'p') {
+            event.preventDefault()
+            event.stopPropagation()
+            commandPaletteOpen = !commandPaletteOpen
+            return
+        }
+
+        if (commandPaletteOpen || showInstructions) return
+        if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+            return
+
+        const capture = () => {
+            event.preventDefault()
+            event.stopPropagation()
+        }
+
+        if (/^[1-9]$/.test(event.key)) {
+            const index = Number.parseInt(event.key, 10) - 1
+            const connection = connections[index]
+            if (!connection) return
+            capture()
+            void switchSession(connection.sessionId)
+            return
+        }
+
+        switch (key) {
+            case 'a':
+                capture()
+                void openServerPicker()
+                break
+            case 'n':
+                if (
+                    !activeConnection ||
+                    activeConnection.state !== ConnectionState.Connected
+                )
+                    return
+                capture()
+                newShell()
+                break
+            case 'r':
+                if (!activeConnection) return
+                capture()
+                void reconnectSession(activeConnection.sessionId)
+                break
+            case 'b':
+                capture()
+                toggleServersPanel()
+                break
+            case 'm':
+                capture()
+                toggleMetricsPanel()
+                break
+        }
+    }
+
     function connectionStateLabel(connection: WorkspaceConnection | null) {
         if (!connection) return 'No active session'
         if (connection.state === ConnectionState.AuthExpired)
@@ -736,6 +829,146 @@
         return 'connecting'
     }
 
+    let commandPaletteItems = $derived.by<CommandPaletteItem[]>(() => {
+        const activeSessionIdForCommand = activeConnection?.sessionId ?? null
+        const items: CommandPaletteItem[] = [
+            {
+                id: 'add-server',
+                label: 'Add server',
+                detail: 'Open the server picker and focus search',
+                shortcut: 'Alt+A',
+                keywords: 'connect target picker servers',
+                run: openServerPicker,
+            },
+            {
+                id: 'new-shell',
+                label: 'New shell on current server',
+                detail: activeConnection?.targetName ?? 'No active server',
+                shortcut: 'Alt+N',
+                keywords: 'terminal channel shell',
+                disabled:
+                    !activeConnection ||
+                    activeConnection.state !== ConnectionState.Connected,
+                run: newShell,
+            },
+            {
+                id: 'reconnect-server',
+                label: 'Reconnect current server',
+                detail: activeConnection?.targetName ?? 'No active server',
+                shortcut: 'Alt+R',
+                keywords: 'retry reconnect target session',
+                disabled: !activeSessionIdForCommand,
+                run: () => {
+                    if (activeSessionIdForCommand)
+                        return reconnectSession(activeSessionIdForCommand)
+                },
+            },
+            {
+                id: 'toggle-servers',
+                label: `${sidebarOpen ? 'Hide' : 'Show'} servers panel`,
+                detail: 'Toggle the left target browser',
+                shortcut: 'Alt+B',
+                keywords: 'sidebar targets browser panel',
+                run: toggleServersPanel,
+            },
+            {
+                id: 'toggle-metrics',
+                label: `${metricsRailOpen ? 'Hide' : 'Show'} metrics panel`,
+                detail: 'Toggle the right metrics rail',
+                shortcut: 'Alt+M',
+                keywords: 'metrics monitoring panel rail',
+                run: toggleMetricsPanel,
+            },
+            {
+                id: 'zoom-in',
+                label: 'Increase terminal font size',
+                detail: `Current size: ${fontSize}px`,
+                keywords: 'font zoom larger terminal',
+                disabled: fontSize >= FONT_SIZE_MAX,
+                run: zoomIn,
+            },
+            {
+                id: 'zoom-out',
+                label: 'Decrease terminal font size',
+                detail: `Current size: ${fontSize}px`,
+                keywords: 'font zoom smaller terminal',
+                disabled: fontSize <= FONT_SIZE_MIN,
+                run: zoomOut,
+            },
+            {
+                id: 'connection-instructions',
+                label: 'Connect from your machine',
+                detail: activeConnection?.targetName ?? 'No active server',
+                keywords: 'ssh instructions external client',
+                disabled: !activeConnection,
+                run: () => {
+                    showInstructions = true
+                },
+            },
+            {
+                id: 'disconnect-current',
+                label: 'Disconnect current server',
+                detail: activeConnection?.targetName ?? 'No active server',
+                keywords: 'close session disconnect',
+                disabled: !activeSessionIdForCommand,
+                run: () => {
+                    if (activeSessionIdForCommand)
+                        return closeSession(activeSessionIdForCommand)
+                },
+            },
+            {
+                id: 'disconnect-all',
+                label: 'Disconnect all servers',
+                detail: `${connections.length} connected`,
+                keywords: 'close all sessions disconnect',
+                disabled: connections.length === 0,
+                run: disconnectAll,
+            },
+        ]
+
+        for (const target of sshTargets) {
+            const connection = connectionForTarget(target.id)
+            const connectionIndex = connection
+                ? connections.findIndex(
+                      item => item.sessionId === connection.sessionId,
+                  )
+                : -1
+            items.push({
+                id: `target-${target.id}`,
+                label: connection
+                    ? `Switch to ${target.name}`
+                    : `Connect ${target.name}`,
+                detail: target.group?.name
+                    ? `${target.group.name}${target.description ? ` · ${target.description}` : ''}`
+                    : target.description || 'SSH target',
+                shortcut:
+                    connectionIndex >= 0 && connectionIndex < 9
+                        ? `Alt+${connectionIndex + 1}`
+                        : undefined,
+                keywords: `server target ssh ${target.name} ${target.description ?? ''} ${target.group?.name ?? ''}`,
+                disabled: pendingTargetIds.includes(target.id),
+                run: () => activateTarget(target),
+            })
+        }
+
+        for (const [name, option] of terminalThemeOptions) {
+            items.push({
+                id: `theme-${name}`,
+                label: `Theme: ${option.label}`,
+                detail:
+                    terminalThemeName === name
+                        ? 'Current terminal theme'
+                        : 'Switch terminal and workspace appearance',
+                keywords: `theme appearance ${name} ${option.label}`,
+                run: () => {
+                    terminalThemeName = name
+                },
+            })
+        }
+
+        return items
+    })
+
     async function loadTargets() {
         targetsLoading = true
         targetLoadError = null
@@ -759,6 +992,7 @@
     onMount(() => {
         reloadServerInfo()
         loadTargets()
+        window.addEventListener('keydown', handleGlobalShortcut, true)
         if (window.innerWidth < 1100) {
             if (storedSidebar === null) sidebarOpen = false
             if (storedMetricsRail === null) metricsRailOpen = false
@@ -766,6 +1000,7 @@
     })
 
     onDestroy(() => {
+        window.removeEventListener('keydown', handleGlobalShortcut, true)
         for (const timer of recoveryTimers.values()) clearTimeout(timer)
         recoveryTimers.clear()
     })
@@ -1087,6 +1322,20 @@
                         Connect a server to see metrics.
                     </div>
                 {/if}
+
+                <button
+                    type="button"
+                    class="keyboard-help"
+                    title="Open command palette and keyboard shortcuts"
+                    aria-label="Open command palette and keyboard shortcuts"
+                    onclick={openCommandPalette}
+                >
+                    <span class="keyboard-help-copy">
+                        <strong>Command palette</strong>
+                        <small>Keyboard shortcuts</small>
+                    </span>
+                    <kbd>Ctrl+Shift+P</kbd>
+                </button>
             </aside>
         {/if}
     </div>
@@ -1149,6 +1398,17 @@
                         </button>
                     </div>
                     <DropdownItem divider />
+                    <DropdownItem
+                        onclick={() => {
+                            openCommandPalette()
+                        }}
+                    >
+                        <span class="palette-menu-item">
+                            <span>Command palette & shortcuts</span>
+                            <kbd>Ctrl+Shift+P</kbd>
+                        </span>
+                    </DropdownItem>
+                    <DropdownItem divider />
                     <div class="dropdown-header">Terminal theme</div>
                     {#each terminalThemeOptions as [name, option]}
                         <DropdownItem
@@ -1200,6 +1460,14 @@
             </Dropdown>
         </div>
     </div>
+
+    {#if commandPaletteOpen}
+        <WebSshCommandPalette
+            items={commandPaletteItems}
+            light={terminalTheme.appearance === 'light'}
+            onClose={closeCommandPalette}
+        />
+    {/if}
 </div>
 
 {#if activeConnection}
@@ -1438,6 +1706,68 @@
     .metrics-panel {
         width: 244px;
         border-left: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    .keyboard-help {
+        flex: 0 0 auto;
+        min-height: 42px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 7px 7px;
+        padding: 6px 7px 6px 9px;
+        border: 1px solid rgba(88, 166, 255, 0.18);
+        border-radius: 7px;
+        color: rgba(255, 255, 255, 0.62);
+        background: rgba(88, 166, 255, 0.055);
+        text-align: left;
+    }
+
+    .keyboard-help:hover {
+        color: rgba(255, 255, 255, 0.92);
+        border-color: rgba(88, 166, 255, 0.38);
+        background: rgba(88, 166, 255, 0.11);
+    }
+
+    .keyboard-help-copy {
+        min-width: 0;
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        line-height: 1.15;
+    }
+
+    .keyboard-help-copy strong {
+        font-size: 0.7rem;
+        font-weight: 650;
+    }
+
+    .keyboard-help-copy small {
+        margin-top: 2px;
+        color: rgba(255, 255, 255, 0.36);
+        font-size: 0.6rem;
+    }
+
+    .keyboard-help kbd,
+    .palette-menu-item kbd {
+        flex: 0 0 auto;
+        padding: 2px 5px;
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        border-radius: 4px;
+        color: rgba(255, 255, 255, 0.52);
+        background: rgba(255, 255, 255, 0.05);
+        box-shadow: none;
+        font-family: inherit;
+        font-size: 0.58rem;
+        font-weight: 650;
+    }
+
+    .palette-menu-item {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
     }
 
     .panel-header,
@@ -1777,6 +2107,29 @@
 
     .light-workspace .metrics-panel {
         border-left-color: #d0d7de;
+    }
+
+    .light-workspace .keyboard-help {
+        color: #57606a;
+        border-color: rgba(9, 105, 218, 0.2);
+        background: rgba(9, 105, 218, 0.045);
+    }
+
+    .light-workspace .keyboard-help:hover {
+        color: #24292f;
+        border-color: rgba(9, 105, 218, 0.42);
+        background: rgba(9, 105, 218, 0.09);
+    }
+
+    .light-workspace .keyboard-help-copy small {
+        color: #6e7781;
+    }
+
+    .light-workspace .keyboard-help kbd,
+    .light-workspace .palette-menu-item kbd {
+        color: #57606a;
+        border-color: #d0d7de;
+        background: #f6f8fa;
     }
 
     .light-workspace .panel-header,
