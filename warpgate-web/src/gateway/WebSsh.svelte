@@ -452,11 +452,14 @@
         document.title = windowTitle
     })
 
-    loadTheme('dark')
+    $effect(() => {
+        void loadTheme(terminalTheme.appearance)
+    })
 </script>
 
 <div
     class="webssh-workspace"
+    class:light-workspace={terminalTheme.appearance === 'light'}
     style={`background-color: ${terminalTheme.background}`}
 >
     <div class="workspace-topbar">
@@ -1302,6 +1305,207 @@
     .theme-check {
         display: inline-block;
         width: 1.25rem;
+    }
+
+    .light-workspace {
+        color: #24292f;
+    }
+
+    .light-workspace .workspace-topbar,
+    .light-workspace .workspace-footer {
+        background: rgba(246, 248, 250, 0.98);
+        border-color: #d0d7de;
+    }
+
+    .light-workspace .icon-button,
+    .light-workspace .top-action,
+    .light-workspace .panel-collapse,
+    .light-workspace .tab-close {
+        color: #57606a;
+    }
+
+    .light-workspace .icon-button:hover,
+    .light-workspace .icon-button.active,
+    .light-workspace .top-action:hover:not(:disabled),
+    .light-workspace .panel-collapse:hover,
+    .light-workspace .tab-close:hover {
+        color: #24292f;
+        background: rgba(9, 105, 218, 0.08);
+    }
+
+    .light-workspace .session-tab {
+        color: #57606a;
+        border-color: #d0d7de;
+        background: rgba(255, 255, 255, 0.84);
+    }
+
+    .light-workspace .session-tab.active {
+        color: #24292f;
+        border-color: rgba(9, 105, 218, 0.55);
+        background: #ddf4ff;
+    }
+
+    .light-workspace .connection-dot {
+        background: #8c959f;
+    }
+
+    .light-workspace .connection-dot.connected,
+    .light-workspace .target-state.connected {
+        background: #1a7f37;
+        color: #1a7f37;
+        box-shadow: 0 0 7px rgba(26, 127, 55, 0.24);
+    }
+
+    .light-workspace .connection-dot.connecting,
+    .light-workspace .target-state.pending {
+        background: #9a6700;
+        color: #9a6700;
+    }
+
+    .light-workspace .connection-dot.error,
+    .light-workspace .panel-error {
+        background: #cf222e;
+        color: #cf222e;
+    }
+
+    .light-workspace .targets-panel,
+    .light-workspace .metrics-panel {
+        background: rgba(255, 255, 255, 0.97);
+        border-color: #d0d7de;
+    }
+
+    .light-workspace .targets-panel {
+        border-right-color: #d0d7de;
+    }
+
+    .light-workspace .metrics-panel {
+        border-left-color: #d0d7de;
+    }
+
+    .light-workspace .panel-header,
+    .light-workspace .metrics-panel-header,
+    .light-workspace .target-search,
+    .light-workspace .targets-footer {
+        border-color: rgba(27, 31, 36, 0.12);
+    }
+
+    .light-workspace .panel-kicker,
+    .light-workspace .target-description,
+    .light-workspace .targets-footer,
+    .light-workspace .panel-empty,
+    .light-workspace .footer-status {
+        color: #6e7781;
+    }
+
+    .light-workspace .panel-title,
+    .light-workspace .workspace-empty strong,
+    .light-workspace .footer-status strong {
+        color: #24292f;
+    }
+
+    .light-workspace .target-search :global(input) {
+        color: #24292f;
+        border-color: #d0d7de;
+        background: #ffffff;
+    }
+
+    .light-workspace .group-header,
+    .light-workspace .target-row,
+    .light-workspace .workspace-empty {
+        color: #57606a;
+    }
+
+    .light-workspace .group-header:hover,
+    .light-workspace .target-row:hover,
+    .light-workspace .target-row.selected {
+        color: #24292f;
+        background: rgba(9, 105, 218, 0.08);
+    }
+
+    .light-workspace .group-count {
+        color: #8c959f;
+    }
+
+    .light-workspace .target-row.connected {
+        background: rgba(26, 127, 55, 0.07);
+    }
+
+    .light-workspace .connect-error {
+        color: #cf222e;
+        border-color: rgba(207, 34, 46, 0.28);
+        background: rgba(207, 34, 46, 0.07);
+    }
+
+    .light-workspace :global(.shell-strip) {
+        border-bottom-color: #d0d7de;
+        background: rgba(246, 248, 250, 0.86);
+    }
+
+    .light-workspace :global(.shell-pill) {
+        color: #57606a;
+        border-color: #d0d7de;
+        background: #ffffff;
+    }
+
+    .light-workspace :global(.shell-pill.active) {
+        color: #24292f;
+        border-color: rgba(9, 105, 218, 0.48);
+        background: #ddf4ff;
+    }
+
+    .light-workspace .metrics-panel :global(.metrics-shell) {
+        color: #24292f;
+    }
+
+    .light-workspace .metrics-panel :global(.status-dot) {
+        background: #8c959f;
+    }
+
+    .light-workspace .metrics-panel :global(.status-dot.available) {
+        background: #1a7f37;
+        box-shadow: 0 0 7px rgba(26, 127, 55, 0.24);
+    }
+
+    .light-workspace .metrics-panel :global(.status-dot.stale) {
+        background: #9a6700;
+        box-shadow: 0 0 7px rgba(154, 103, 0, 0.2);
+    }
+
+    .light-workspace .metrics-panel :global(.status-label),
+    .light-workspace .metrics-panel :global(.interface-label),
+    .light-workspace .metrics-panel :global(.metrics-empty),
+    .light-workspace .metrics-panel :global(.metric-sub),
+    .light-workspace .metrics-panel :global(.metric-title) {
+        color: #6e7781;
+    }
+
+    .light-workspace .metrics-panel :global(.metric-card) {
+        border-color: #d0d7de;
+        background: rgba(255, 255, 255, 0.9);
+    }
+
+    .light-workspace .metrics-panel :global(.metric-card.warning) {
+        border-color: rgba(154, 103, 0, 0.5);
+        background: rgba(154, 103, 0, 0.08);
+    }
+
+    .light-workspace .metrics-panel :global(.metric-card.critical) {
+        border-color: rgba(207, 34, 46, 0.5);
+        background: rgba(207, 34, 46, 0.08);
+    }
+
+    .light-workspace .metrics-panel :global(.metric-card.warning .metric-value),
+    .light-workspace .metrics-panel :global(.metric-card.warning .metric-title) {
+        color: #9a6700;
+    }
+
+    .light-workspace .metrics-panel :global(.metric-card.critical .metric-value),
+    .light-workspace .metrics-panel :global(.metric-card.critical .metric-title) {
+        color: #cf222e;
+    }
+
+    .light-workspace .metrics-panel :global(.rail .status-block) {
+        border-bottom-color: rgba(27, 31, 36, 0.12);
     }
 
     @media (max-width: 1100px) {

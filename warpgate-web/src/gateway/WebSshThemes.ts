@@ -4,9 +4,11 @@ export type TerminalThemeName =
     | 'dracula'
     | 'nord'
     | 'warpgate'
+    | 'github-light'
 
 export interface TerminalTheme {
     label: string
+    appearance: 'dark' | 'light'
     foreground: string
     background: string
     cursor: string
@@ -18,6 +20,7 @@ export const DEFAULT_TERMINAL_THEME: TerminalThemeName = 'tokyo-night'
 
 export const TERMINAL_THEMES: Record<TerminalThemeName, TerminalTheme> = {
     'tokyo-night': {
+        appearance: 'dark',
         label: 'Tokyo Night',
         foreground: '#c0caf5',
         background: '#1a1b26',
@@ -43,6 +46,7 @@ export const TERMINAL_THEMES: Record<TerminalThemeName, TerminalTheme> = {
         ],
     },
     'catppuccin-mocha': {
+        appearance: 'dark',
         label: 'Catppuccin Mocha',
         foreground: '#cdd6f4',
         background: '#1e1e2e',
@@ -68,6 +72,7 @@ export const TERMINAL_THEMES: Record<TerminalThemeName, TerminalTheme> = {
         ],
     },
     dracula: {
+        appearance: 'dark',
         label: 'Dracula',
         foreground: '#f8f8f2',
         background: '#282a36',
@@ -93,6 +98,7 @@ export const TERMINAL_THEMES: Record<TerminalThemeName, TerminalTheme> = {
         ],
     },
     nord: {
+        appearance: 'dark',
         label: 'Nord',
         foreground: '#d8dee9',
         background: '#2e3440',
@@ -117,7 +123,34 @@ export const TERMINAL_THEMES: Record<TerminalThemeName, TerminalTheme> = {
             '#eceff4',
         ],
     },
+    'github-light': {
+        appearance: 'light',
+        label: 'GitHub Light',
+        foreground: '#24292f',
+        background: '#f6f8fa',
+        cursor: '#0969da',
+        selectionBackground: '#b6d7ff',
+        colors: [
+            '#24292f',
+            '#cf222e',
+            '#1a7f37',
+            '#9a6700',
+            '#0969da',
+            '#8250df',
+            '#1b7c83',
+            '#6e7781',
+            '#57606a',
+            '#a40e26',
+            '#116329',
+            '#633c01',
+            '#0550ae',
+            '#6639ba',
+            '#0a5c66',
+            '#24292f',
+        ],
+    },
     warpgate: {
+        appearance: 'dark',
         label: 'Warpgate Original',
         foreground: '#cacaca',
         background: '#171717',

@@ -34,7 +34,7 @@ Rebase each downstream release onto an explicit upstream Warpgate tag. Keep down
 
 ## Web SSH UI
 
-- The terminal theme defaults to Tokyo Night and can be switched between Tokyo Night, Catppuccin Mocha, Dracula, Nord, and Warpgate Original.
+- The terminal theme defaults to Tokyo Night and can be switched between Tokyo Night, Catppuccin Mocha, Dracula, Nord, Warpgate Original, and GitHub Light. Light terminal themes also switch the Web SSH workspace chrome to a matching light appearance.
 - Theme and font-size preferences are browser-local only (`warpgateWebSSHTheme`, `warpgateWebSSHFontSize`) and do not change the Warpgate database.
 - Web SSH starts the fixed backend metrics collector automatically and keeps only the latest 60 one-second samples in browser memory for sparklines.
 - The active session metrics render in a vertical rail; CPU, memory, normalized load, and root disk usage gain warning/critical emphasis, and samples older than 3.5 seconds are marked `STALE`.
