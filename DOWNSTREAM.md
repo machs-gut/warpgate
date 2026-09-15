@@ -48,3 +48,6 @@ Rebase each downstream release onto an explicit upstream Warpgate tag. Keep down
 - Sidebar, metrics-rail, terminal-theme, and font-size preferences are browser-local; workspace target sessions are intentionally not persisted across page reloads.
 
 - Web SSH buffers up to 1 MiB of early terminal output per shell channel until the xterm instance is mounted, then flushes and refits it; this prevents fast remote login banners/prompts from being lost during workspace session creation.
+- Web SSH distinguishes connecting, live, reconnecting, authentication-expired, target-offline, and failed states; short WebSocket interruptions retry the existing server-side Web SSH session before falling back to session replacement.
+- Reattaching the same Web SSH session preserves the remote shell process and existing xterm scrollback. If the backend session or SSH target is gone, replacement-session recovery preserves browser-visible terminal history as plain scrollback with a reconnect separator, but does not pretend to restore the old remote process.
+- User-initiated disconnect/close remains final and never triggers automatic recovery.

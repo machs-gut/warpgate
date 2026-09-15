@@ -19,6 +19,8 @@
         MetricsSnapshot,
         MetricsStatus,
         MetricsViewState,
+        ReconnectReason,
+        TerminalHistorySnapshot,
     } from './WebSshTypes'
 
     interface Props {
@@ -26,6 +28,7 @@
         active: boolean
         fontSize: number
         theme: TerminalTheme
+        initialHistory?: TerminalHistorySnapshot | null
         onInfo: (sessionId: string, info: WebSshSessionInfo) => void
         onConnectionState: (
             sessionId: string,
@@ -33,6 +36,9 @@
             attempt: number,
         ) => void
         onMetrics: (sessionId: string, metrics: MetricsViewState) => void
+        onTransportReconnected: (sessionId: string, attempts: number) => void
+        onTargetConnected: (sessionId: string) => void
+        onReconnectNeeded: (sessionId: string, reason: ReconnectReason) => void
         onError: (
             sessionId: string,
             message: string | null,
@@ -45,9 +51,13 @@
         active,
         fontSize,
         theme,
+        initialHistory = null,
         onInfo,
         onConnectionState,
         onMetrics,
+        onTransportReconnected,
+        onTargetConnected,
+        onReconnectNeeded,
         onError,
     }: Props = $props()
 
@@ -95,6 +105,14 @@
     let activeChannelId: string | null = $state(null)
     let connectionError: string | null = $state(null)
     let sessionNotFound = $state(false)
+    let sessionLoaded = $state(false)
+    let targetRecoveryRequested = false
+    // svelte-ignore state_referenced_locally -- keyed by sessionId; initial history is immutable
+    let historyToRestore = initialHistory ? [...initialHistory.shells] : []
+    // svelte-ignore state_referenced_locally -- keyed by sessionId; initial history is immutable
+    const historyActiveIndex = initialHistory?.activeIndex ?? 0
+    const restoredChannelIds: string[] = []
+    const restoringChannelIds = new Set<string>()
     let pendingHostKey: Extract<
         ServerMessage,
         { type: 'host_key_unknown' }
@@ -123,6 +141,13 @@
             onMessage(JSON.parse(data as string) as ServerMessage),
         onStateChange: (state, attempt) =>
             onConnectionState(sessionId, state, attempt),
+        onReconnect: attempts => {
+            for (const id of channelOrder) tabs[id]?.writeReconnectMarker()
+            onTransportReconnected(sessionId, attempts)
+        },
+        onReconnectExhausted: () => {
+            onReconnectNeeded(sessionId, 'transport')
+        },
     })
 
     function send(msg: ClientMessage) {
@@ -151,7 +176,22 @@
     function onMessage(msg: ServerMessage) {
         switch (msg.type) {
             case 'connection_state':
-                ws.updateState(msg.state)
+                if (msg.state === ConnectionState.Connected) {
+                    targetRecoveryRequested = false
+                    connectionError = null
+                    sessionNotFound = false
+                    onError(sessionId, null, false)
+                    ws.updateState(ConnectionState.Connected)
+                    onTargetConnected(sessionId)
+                } else if (msg.state === ConnectionState.Disconnected) {
+                    ws.updateState(ConnectionState.TargetOffline)
+                    if (!targetRecoveryRequested) {
+                        targetRecoveryRequested = true
+                        onReconnectNeeded(sessionId, 'target')
+                    }
+                } else {
+                    ws.updateState(ConnectionState.Connecting)
+                }
                 break
             case 'channel_opened':
                 openChannel(msg.channel_id)
@@ -217,7 +257,7 @@
 
     function writeTerminalOutput(id: string, data: Uint8Array) {
         const tab = tabs[id]
-        if (tab) {
+        if (tab && !restoringChannelIds.has(id)) {
             tab.write(data)
             return
         }
@@ -244,10 +284,13 @@
     }
 
     async function openChannel(id: string) {
+        const history = historyToRestore.shift()
+        if (history) restoringChannelIds.add(id)
+
         channels.set(id, {
             id,
-            label: `Shell ${channelOrder.length + 1}`,
-            terminalTitle: undefined,
+            label: history?.label ?? `Shell ${channelOrder.length + 1}`,
+            terminalTitle: history?.terminalTitle,
             closed: false,
         })
         channelOrder = [...channelOrder, id]
@@ -255,8 +298,28 @@
 
         await tick()
         requestAnimationFrame(() => {
+            if (history) {
+                tabs[id]?.restoreHistory(history.text)
+                restoringChannelIds.delete(id)
+                restoredChannelIds.push(id)
+            }
             flushTerminalOutput(id)
             tabs[id]?.fit()
+
+            if (historyToRestore.length > 0) {
+                requestNewChannel()
+            } else if (initialHistory && restoredChannelIds.length > 0) {
+                const desired =
+                    restoredChannelIds[
+                        Math.min(
+                            historyActiveIndex,
+                            restoredChannelIds.length - 1,
+                        )
+                    ]
+                if (desired && desired !== activeChannelId) {
+                    void switchToChannel(desired)
+                }
+            }
         })
     }
 
@@ -298,6 +361,27 @@
         tabs[activeChannelId]?.fit()
     }
 
+    export async function snapshotHistory(): Promise<TerminalHistorySnapshot> {
+        const shells: TerminalHistorySnapshot['shells'] = []
+        for (const id of channelOrder) {
+            const channel = channels.get(id)
+            const tab = tabs[id]
+            if (!channel || !tab) continue
+            shells.push({
+                label: channel.label,
+                terminalTitle: channel.terminalTitle,
+                text: await tab.snapshotText(),
+            })
+        }
+        return {
+            shells,
+            activeIndex: Math.max(
+                0,
+                activeChannelId ? channelOrder.indexOf(activeChannelId) : 0,
+            ),
+        }
+    }
+
     export async function disconnect(): Promise<void> {
         ws.close()
         try {
@@ -314,6 +398,7 @@
     onMount(async () => {
         try {
             const info = await api.getWebSshSession({ sessionId })
+            sessionLoaded = true
             onInfo(sessionId, info)
             onError(sessionId, null, false)
         } catch (e) {
@@ -337,7 +422,7 @@
     use:observeResize
     style={`background-color: ${theme.background}`}
 >
-    {#if connectionError}
+    {#if connectionError && !sessionLoaded}
         <div class="connection-error">
             <InfoBox variant="warning">
                 {#if sessionNotFound}

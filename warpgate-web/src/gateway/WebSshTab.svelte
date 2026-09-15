@@ -266,6 +266,47 @@
         }
     }
 
+    function snapshotBufferText(): string {
+        const buffer = terminal.buffer.active
+        const logicalLines: string[] = []
+        for (let i = 0; i < buffer.length; i++) {
+            const line = buffer.getLine(i)
+            if (!line) continue
+
+            const text = line.translateToString(true)
+            if (line.isWrapped && logicalLines.length > 0) {
+                logicalLines[logicalLines.length - 1] += text
+            } else {
+                logicalLines.push(text)
+            }
+        }
+
+        while (logicalLines.length > 0 && !logicalLines.at(-1)?.trim()) {
+            logicalLines.pop()
+        }
+        return logicalLines.join('\r\n')
+    }
+
+    export function snapshotText(): Promise<string> {
+        return new Promise(resolve => {
+            terminal.write('', () => resolve(snapshotBufferText()))
+        })
+    }
+
+    export function restoreHistory(text: string): void {
+        if (text) {
+            terminal.write(text)
+            if (!text.endsWith('\n')) terminal.write('\r\n')
+        }
+        terminal.write(
+            '\x1b[38;5;244m── Reconnected: previous terminal history above ──\x1b[0m\r\n',
+        )
+    }
+
+    export function writeReconnectMarker(): void {
+        terminal.write('\r\n\x1b[38;5;244m── Connection restored ──\x1b[0m\r\n')
+    }
+
     export function fit(): void {
         fitAddon.fit()
         onResize(terminal.cols, terminal.rows)

@@ -23,7 +23,7 @@
     } from '@sveltestrap/sveltestrap'
     import ConnectionInstructions from 'common/ConnectionInstructions.svelte'
     import { handleReauthError } from 'common/reauth'
-    import { onMount, tick } from 'svelte'
+    import { onDestroy, onMount, tick } from 'svelte'
     import Fa from 'svelte-fa'
     import { loadTheme } from 'theme'
     import {
@@ -42,7 +42,11 @@
         TERMINAL_THEMES,
         type TerminalThemeName,
     } from './WebSshThemes'
-    import type { MetricsViewState } from './WebSshTypes'
+    import type {
+        MetricsViewState,
+        ReconnectReason,
+        TerminalHistorySnapshot,
+    } from './WebSshTypes'
 
     interface Props {
         params: { sessionId: string }
@@ -56,6 +60,10 @@
         targetKind: TargetKind
         state: ConnectionState
         attempt: number
+        reconnectCount: number
+        lastReconnectAt: number | null
+        recoveryAttempt: number
+        recoveryPending: boolean
         metrics: MetricsViewState
         error: string | null
         notFound: boolean
@@ -85,6 +93,10 @@
             targetKind: TargetKind.Ssh,
             state: ConnectionState.Connecting,
             attempt: 0,
+            reconnectCount: 0,
+            lastReconnectAt: null,
+            recoveryAttempt: 0,
+            recoveryPending: false,
             metrics: emptyMetrics(),
             error: null,
             notFound: false,
@@ -92,6 +104,9 @@
     ])
     let activeSessionId: string | null = $state(initialSessionId)
     const panes: Record<string, WebSshConnection> = {}
+    const pendingHistory = new Map<string, TerminalHistorySnapshot>()
+    const recoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+    const MAX_AUTO_RECOVERY_ATTEMPTS = 5
 
     let sshTargets: TargetSnapshot[] = $state([])
     let targetsLoading = $state(true)
@@ -328,6 +343,37 @@
         updateConnection(sessionId, { state, attempt })
     }
 
+    function onTransportReconnected(sessionId: string, _attempts: number) {
+        const connection = connectionBySessionId(sessionId)
+        if (!connection || connection.recoveryPending) return
+        updateConnection(sessionId, {
+            state: ConnectionState.Connected,
+            attempt: 0,
+            reconnectCount: connection.reconnectCount + 1,
+            lastReconnectAt: Date.now(),
+            error: null,
+            notFound: false,
+        })
+    }
+
+    function onTargetConnected(sessionId: string) {
+        const connection = connectionBySessionId(sessionId)
+        if (!connection) return
+        const recovered = connection.recoveryPending
+        updateConnection(sessionId, {
+            state: ConnectionState.Connected,
+            attempt: 0,
+            reconnectCount: connection.reconnectCount + (recovered ? 1 : 0),
+            lastReconnectAt: recovered
+                ? Date.now()
+                : connection.lastReconnectAt,
+            recoveryAttempt: 0,
+            recoveryPending: false,
+            error: null,
+            notFound: false,
+        })
+    }
+
     function onMetrics(sessionId: string, metrics: MetricsViewState) {
         updateConnection(sessionId, { metrics })
     }
@@ -356,19 +402,73 @@
         return matches.length === 1 ? (matches[0]?.id ?? null) : null
     }
 
-    async function reconnectSession(sessionId: string) {
+    function clearRecoveryTimer(sessionId: string) {
+        const timer = recoveryTimers.get(sessionId)
+        if (timer) clearTimeout(timer)
+        recoveryTimers.delete(sessionId)
+    }
+
+    function onReconnectNeeded(sessionId: string, reason: ReconnectReason) {
+        const connection = connectionBySessionId(sessionId)
+        if (!connection || recoveryTimers.has(sessionId)) return
+        if (reconnectingSessionIds.includes(sessionId)) return
+
+        if (connection.recoveryAttempt >= MAX_AUTO_RECOVERY_ATTEMPTS) {
+            updateConnection(sessionId, {
+                state: ConnectionState.Failed,
+                recoveryPending: false,
+                error: 'Automatic reconnect failed. Double-click the tab to retry.',
+                notFound: false,
+            })
+            return
+        }
+
+        const nextAttempt = connection.recoveryAttempt + 1
+        const delay =
+            nextAttempt === 1
+                ? 0
+                : Math.min(1000 * 2 ** (nextAttempt - 2), 8000)
+        updateConnection(sessionId, {
+            state: ConnectionState.Reconnecting,
+            attempt: nextAttempt,
+            recoveryAttempt: nextAttempt,
+            recoveryPending: true,
+            error: null,
+            notFound: false,
+        })
+
+        const timer = setTimeout(() => {
+            recoveryTimers.delete(sessionId)
+            void reconnectSession(sessionId, true, reason)
+        }, delay)
+        recoveryTimers.set(sessionId, timer)
+    }
+
+    async function reconnectSession(
+        sessionId: string,
+        automatic = false,
+        reason: ReconnectReason = 'target',
+    ) {
         if (reconnectingSessionIds.includes(sessionId)) return
         const connection = connectionBySessionId(sessionId)
         if (!connection) return
+        const recoveryAttempt = automatic ? connection.recoveryAttempt : 0
 
+        clearRecoveryTimer(sessionId)
         const targetId = reconnectTargetId(connection)
         if (!targetId) {
             updateConnection(sessionId, {
-                state: ConnectionState.Error,
+                state: ConnectionState.Failed,
+                recoveryPending: false,
                 error: 'Unable to identify the SSH target for reconnect',
                 notFound: false,
             })
             return
+        }
+
+        let history = await panes[sessionId]?.snapshotHistory()
+        if (!history || history.shells.length === 0) {
+            history = pendingHistory.get(sessionId)
         }
 
         reconnectingSessionIds = [...reconnectingSessionIds, sessionId]
@@ -392,13 +492,19 @@
 
             await panes[sessionId]?.disconnect()
             delete panes[sessionId]
+            pendingHistory.delete(sessionId)
+            if (history && history.shells.length > 0) {
+                pendingHistory.set(newSessionId, history)
+            }
 
             connections[currentIndex] = {
                 ...connection,
                 sessionId: newSessionId,
                 targetId,
-                state: ConnectionState.Connecting,
-                attempt: 0,
+                state: ConnectionState.Reconnecting,
+                attempt: recoveryAttempt || 1,
+                recoveryAttempt,
+                recoveryPending: true,
                 metrics: emptyMetrics(),
                 error: null,
                 notFound: false,
@@ -409,11 +515,36 @@
             await tick()
             requestAnimationFrame(() => panes[newSessionId]?.fit())
         } catch (err) {
-            if (!(await handleReauthError(err))) {
-                connectError =
-                    err instanceof Error
-                        ? err.message
-                        : 'Failed to reconnect target'
+            const authExpired = await handleReauthError(err)
+            if (authExpired) {
+                updateConnection(sessionId, {
+                    state: ConnectionState.AuthExpired,
+                    recoveryPending: false,
+                    error: 'Authentication expired',
+                    notFound: false,
+                })
+            } else if (automatic) {
+                updateConnection(sessionId, {
+                    state: ConnectionState.Reconnecting,
+                    recoveryPending: true,
+                    error: null,
+                    notFound: false,
+                })
+                reconnectingSessionIds = reconnectingSessionIds.filter(
+                    id => id !== sessionId,
+                )
+                onReconnectNeeded(sessionId, reason)
+                return
+            } else {
+                updateConnection(sessionId, {
+                    state: ConnectionState.Failed,
+                    recoveryPending: false,
+                    error:
+                        err instanceof Error
+                            ? err.message
+                            : 'Failed to reconnect target',
+                    notFound: false,
+                })
             }
         } finally {
             reconnectingSessionIds = reconnectingSessionIds.filter(
@@ -445,6 +576,10 @@
             targetKind: target.kind,
             state: ConnectionState.Connecting,
             attempt: 0,
+            reconnectCount: 0,
+            lastReconnectAt: null,
+            recoveryAttempt: 0,
+            recoveryPending: false,
             metrics: emptyMetrics(),
             error: null,
             notFound: false,
@@ -513,6 +648,8 @@
     }
 
     async function closeSession(sessionId: string) {
+        clearRecoveryTimer(sessionId)
+        pendingHistory.delete(sessionId)
         await panes[sessionId]?.disconnect()
         delete panes[sessionId]
         connections = connections.filter(
@@ -531,6 +668,8 @@
 
     async function disconnectAll() {
         for (const connection of [...connections]) {
+            clearRecoveryTimer(connection.sessionId)
+            pendingHistory.delete(connection.sessionId)
             await panes[connection.sessionId]?.disconnect()
             delete panes[connection.sessionId]
         }
@@ -549,21 +688,51 @@
 
     function connectionStateLabel(connection: WorkspaceConnection | null) {
         if (!connection) return 'No active session'
+        if (connection.state === ConnectionState.AuthExpired)
+            return 'Auth expired'
+        if (
+            connection.recoveryPending ||
+            connection.state === ConnectionState.Reconnecting
+        ) {
+            const attempt = connection.recoveryAttempt || connection.attempt
+            return attempt > 0
+                ? `Reconnecting · attempt ${attempt}`
+                : 'Reconnecting'
+        }
+        if (connection.state === ConnectionState.TargetOffline)
+            return 'Target offline'
+        if (connection.state === ConnectionState.Failed) return 'Failed'
         if (connection.error)
             return connection.notFound ? 'Session expired' : 'Error'
+        if (connection.state === ConnectionState.Connected) return 'LIVE'
         if (
-            connection.state === ConnectionState.Connecting &&
-            connection.attempt > 0
+            connection.state === ConnectionState.Connecting ||
+            connection.state === ConnectionState.NotInitialized
         ) {
-            return `${connection.state} · attempt ${connection.attempt}`
+            return 'Connecting'
         }
+        if (connection.state === ConnectionState.Disconnected)
+            return 'Disconnected'
         return connection.state
     }
 
     function stateClass(connection: WorkspaceConnection) {
-        if (connection.error || connection.state === ConnectionState.Error)
+        if (
+            connection.state === ConnectionState.AuthExpired ||
+            connection.state === ConnectionState.TargetOffline ||
+            connection.state === ConnectionState.Failed ||
+            connection.state === ConnectionState.Disconnected ||
+            connection.error ||
+            connection.state === ConnectionState.Error
+        ) {
             return 'error'
-        if (connection.state === ConnectionState.Connected) return 'connected'
+        }
+        if (
+            connection.state === ConnectionState.Connected &&
+            !connection.recoveryPending
+        ) {
+            return 'connected'
+        }
         return 'connecting'
     }
 
@@ -594,6 +763,11 @@
             if (storedSidebar === null) sidebarOpen = false
             if (storedMetricsRail === null) metricsRailOpen = false
         }
+    })
+
+    onDestroy(() => {
+        for (const timer of recoveryTimers.values()) clearTimeout(timer)
+        recoveryTimers.clear()
     })
 
     const originalTitle = document.title
@@ -638,7 +812,7 @@
                     class:active={sessionId === activeSessionId}
                     role="button"
                     tabindex="0"
-                    title={`Double-click to reconnect ${connection.targetName}`}
+                    title={`${connection.targetName} · ${connectionStateLabel(connection)} · Double-click to reconnect`}
                     onclick={() => switchSession(sessionId)}
                     ondblclick={() => reconnectSession(sessionId)}
                     onkeydown={e =>
@@ -854,9 +1028,13 @@
                     active={sessionId === activeSessionId}
                     {fontSize}
                     theme={terminalTheme}
+                    initialHistory={pendingHistory.get(sessionId) ?? null}
                     {onInfo}
                     {onConnectionState}
                     {onMetrics}
+                    {onTransportReconnected}
+                    {onTargetConnected}
+                    {onReconnectNeeded}
                     {onError}
                 />
             {/each}
@@ -920,7 +1098,9 @@
                     class="connection-dot {stateClass(activeConnection)}"
                 ></span>
                 <strong>{activeConnection.targetName}</strong>
-                <span>{connectionStateLabel(activeConnection)}</span>
+                <span title={activeConnection.error ?? undefined}
+                    >{connectionStateLabel(activeConnection)}</span
+                >
             {:else}
                 <span>No active session</span>
             {/if}

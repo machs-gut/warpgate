@@ -24,3 +24,15 @@ export interface MetricsViewState {
     history: MetricsSnapshot[]
     lastSampleAt: number | null
 }
+export type ReconnectReason = 'transport' | 'target'
+
+export interface TerminalHistoryShell {
+    label: string
+    terminalTitle: string | undefined
+    text: string
+}
+
+export interface TerminalHistorySnapshot {
+    shells: TerminalHistoryShell[]
+    activeIndex: number
+}

@@ -1,7 +1,12 @@
 export enum ConnectionState {
+    NotInitialized = 'NotInitialized',
     Connecting = 'Connecting',
     Connected = 'Connected',
+    Reconnecting = 'Reconnecting',
     Disconnected = 'Disconnected',
+    TargetOffline = 'TargetOffline',
+    AuthExpired = 'AuthExpired',
+    Failed = 'Failed',
     Error = 'Error',
 }
 
@@ -10,6 +15,8 @@ export interface ReconnectingWebSocketOptions {
     onOpen: () => void
     onMessage: (data: string | ArrayBuffer) => void
     onStateChange?: (state: ConnectionState, attempt: number) => void
+    onReconnect?: (attempts: number) => void
+    onReconnectExhausted?: () => void
 }
 
 export class ReconnectingWebSocket {
@@ -26,13 +33,18 @@ export class ReconnectingWebSocket {
         state: ConnectionState,
         attempt: number,
     ) => void
+    private readonly onReconnect?: (attempts: number) => void
+    private readonly onReconnectExhausted?: () => void
     private readonly maxAttempts = 5
+    private hasOpened = false
 
     constructor(opts: ReconnectingWebSocketOptions) {
         this.url = opts.url
         this.onOpen = opts.onOpen
         this.onMessage = opts.onMessage
         this.onStateChange = opts.onStateChange
+        this.onReconnect = opts.onReconnect
+        this.onReconnectExhausted = opts.onReconnectExhausted
     }
 
     updateState(state: ConnectionState): void {
@@ -49,9 +61,15 @@ export class ReconnectingWebSocket {
         this.socket.binaryType = 'arraybuffer'
 
         this.socket.addEventListener('open', () => {
+            const reconnectAttempts = this.attempt
+            const wasReconnect = this.hasOpened || reconnectAttempts > 0
+            this.hasOpened = true
             this.attempt = 0
             this.state = ConnectionState.Connected
             this.notifyState()
+            if (wasReconnect && reconnectAttempts > 0) {
+                this.onReconnect?.(reconnectAttempts)
+            }
             this.onOpen()
         })
 
@@ -88,13 +106,14 @@ export class ReconnectingWebSocket {
 
     private scheduleReconnect() {
         if (this.attempt >= this.maxAttempts) {
-            this.state = ConnectionState.Disconnected
+            this.state = ConnectionState.Failed
             this.notifyState()
+            this.onReconnectExhausted?.()
             return
         }
         const delay = Math.min(1000 * 2 ** this.attempt, 30_000)
         this.attempt++
-        this.state = ConnectionState.Connecting
+        this.state = ConnectionState.Reconnecting
         this.notifyState()
         this.timer = setTimeout(() => {
             this.timer = null
