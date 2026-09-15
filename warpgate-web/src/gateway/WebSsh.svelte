@@ -100,6 +100,7 @@
     let targetSearch = $state('')
     let selectedTargetIds: string[] = $state([])
     let pendingTargetIds: string[] = $state([])
+    let reconnectingSessionIds: string[] = $state([])
     let collapsedGroupIds: string[] = $state([])
 
     const storedSidebar = localStorage.getItem('warpgateWebSSHSidebarOpen')
@@ -345,6 +346,82 @@
         requestAnimationFrame(() => panes[sessionId]?.fit())
     }
 
+    function reconnectTargetId(connection: WorkspaceConnection) {
+        if (connection.targetId) return connection.targetId
+        const matches = sshTargets.filter(
+            target =>
+                target.name === connection.targetName &&
+                target.kind === connection.targetKind,
+        )
+        return matches.length === 1 ? (matches[0]?.id ?? null) : null
+    }
+
+    async function reconnectSession(sessionId: string) {
+        if (reconnectingSessionIds.includes(sessionId)) return
+        const connection = connectionBySessionId(sessionId)
+        if (!connection) return
+
+        const targetId = reconnectTargetId(connection)
+        if (!targetId) {
+            updateConnection(sessionId, {
+                state: ConnectionState.Error,
+                error: 'Unable to identify the SSH target for reconnect',
+                notFound: false,
+            })
+            return
+        }
+
+        reconnectingSessionIds = [...reconnectingSessionIds, sessionId]
+        connectError = null
+        try {
+            const { sessionId: newSessionId } = await api.createWebSshSession({
+                createWebSshSessionBody: { targetId },
+            })
+
+            const currentIndex = connections.findIndex(
+                item => item.sessionId === sessionId,
+            )
+            if (currentIndex < 0) {
+                try {
+                    await api.deleteWebSshSession({ sessionId: newSessionId })
+                } catch {
+                    // The replacement session may already have expired.
+                }
+                return
+            }
+
+            await panes[sessionId]?.disconnect()
+            delete panes[sessionId]
+
+            connections[currentIndex] = {
+                ...connection,
+                sessionId: newSessionId,
+                targetId,
+                state: ConnectionState.Connecting,
+                attempt: 0,
+                metrics: emptyMetrics(),
+                error: null,
+                notFound: false,
+            }
+            if (activeSessionId === sessionId) {
+                activeSessionId = newSessionId
+            }
+            await tick()
+            requestAnimationFrame(() => panes[newSessionId]?.fit())
+        } catch (err) {
+            if (!(await handleReauthError(err))) {
+                connectError =
+                    err instanceof Error
+                        ? err.message
+                        : 'Failed to reconnect target'
+            }
+        } finally {
+            reconnectingSessionIds = reconnectingSessionIds.filter(
+                id => id !== sessionId,
+            )
+        }
+    }
+
     async function openServerPicker() {
         sidebarOpen = true
         await tick()
@@ -561,7 +638,9 @@
                     class:active={sessionId === activeSessionId}
                     role="button"
                     tabindex="0"
+                    title={`Double-click to reconnect ${connection.targetName}`}
                     onclick={() => switchSession(sessionId)}
+                    ondblclick={() => reconnectSession(sessionId)}
                     onkeydown={e =>
                             e.key === 'Enter' && switchSession(sessionId)}
                 >
@@ -577,6 +656,7 @@
                                 e.stopPropagation()
                                 closeSession(sessionId)
                             }}
+                        ondblclick={e => e.stopPropagation()}
                     >
                         <Fa icon={faTimes} />
                     </button>
