@@ -106,8 +106,25 @@
     const storedMetricsRail = localStorage.getItem(
         'warpgateWebSSHMetricsRailOpen',
     )
+    const SIDEBAR_WIDTH_DEFAULT = 246
+    const SIDEBAR_WIDTH_MIN = 180
+    const SIDEBAR_WIDTH_MAX = 520
+    const storedSidebarWidth = Number.parseInt(
+        localStorage.getItem('warpgateWebSSHSidebarWidth') ?? '',
+        10,
+    )
     let sidebarOpen = $state(storedSidebar !== 'false')
     let metricsRailOpen = $state(storedMetricsRail !== 'false')
+    let sidebarWidth = $state(
+        Number.isFinite(storedSidebarWidth)
+            ? Math.min(
+                  SIDEBAR_WIDTH_MAX,
+                  Math.max(SIDEBAR_WIDTH_MIN, storedSidebarWidth),
+              )
+            : SIDEBAR_WIDTH_DEFAULT,
+    )
+    let sidebarResizing = $state(false)
+    let sidebarFitFrame: number | null = null
 
     const FONT_SIZE_MIN = 8
     const FONT_SIZE_MAX = 32
@@ -193,6 +210,66 @@
     }
     function zoomOut() {
         fontSize = Math.max(FONT_SIZE_MIN, fontSize - FONT_SIZE_STEP)
+    }
+
+    function clampSidebarWidth(width: number) {
+        return Math.min(
+            SIDEBAR_WIDTH_MAX,
+            Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)),
+        )
+    }
+
+    function fitActivePane() {
+        if (sidebarFitFrame !== null) {
+            cancelAnimationFrame(sidebarFitFrame)
+        }
+        sidebarFitFrame = requestAnimationFrame(() => {
+            sidebarFitFrame = null
+            if (activeSessionId) panes[activeSessionId]?.fit()
+        })
+    }
+
+    function persistSidebarWidth() {
+        localStorage.warpgateWebSSHSidebarWidth = String(sidebarWidth)
+    }
+
+    function startSidebarResize(event: PointerEvent) {
+        if (window.innerWidth < 1100) return
+        event.preventDefault()
+
+        const startX = event.clientX
+        const startWidth = sidebarWidth
+        sidebarResizing = true
+        document.body.classList.add('webssh-sidebar-resizing')
+
+        const onPointerMove = (moveEvent: PointerEvent) => {
+            sidebarWidth = clampSidebarWidth(
+                startWidth + moveEvent.clientX - startX,
+            )
+            fitActivePane()
+        }
+        const finish = () => {
+            window.removeEventListener('pointermove', onPointerMove)
+            window.removeEventListener('pointerup', finish)
+            window.removeEventListener('pointercancel', finish)
+            document.body.classList.remove('webssh-sidebar-resizing')
+            sidebarResizing = false
+            persistSidebarWidth()
+            fitActivePane()
+        }
+
+        window.addEventListener('pointermove', onPointerMove)
+        window.addEventListener('pointerup', finish)
+        window.addEventListener('pointercancel', finish)
+    }
+
+    function resizeSidebarFromKeyboard(event: KeyboardEvent) {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+        event.preventDefault()
+        const delta = event.key === 'ArrowLeft' ? -16 : 16
+        sidebarWidth = clampSidebarWidth(sidebarWidth + delta)
+        persistSidebarWidth()
+        fitActivePane()
     }
 
     function connectionBySessionId(sessionId: string) {
@@ -460,7 +537,8 @@
 <div
     class="webssh-workspace"
     class:light-workspace={terminalTheme.appearance === 'light'}
-    style={`background-color: ${terminalTheme.background}`}
+    class:sidebar-resizing={sidebarResizing}
+    style={`background-color: ${terminalTheme.background}; --webssh-sidebar-width: ${sidebarWidth}px`}
 >
     <div class="workspace-topbar">
         <button
@@ -674,6 +752,16 @@
                     </Button>
                     <span>{connectedTargetIds.length} connected</span>
                 </div>
+
+                <button
+                    type="button"
+                    class="sidebar-resizer"
+                    class:active={sidebarResizing}
+                    aria-label="Resize servers panel"
+                    title="Drag to resize servers panel; use left/right arrow keys for fine adjustment"
+                    onpointerdown={startSidebarResize}
+                    onkeydown={resizeSidebarFromKeyboard}
+                ></button>
             </aside>
         {/if}
 
@@ -1040,8 +1128,51 @@
     }
 
     .targets-panel {
-        width: 246px;
+        position: relative;
+        width: var(--webssh-sidebar-width, 246px);
         border-right: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    .sidebar-resizer {
+        position: absolute;
+        top: 0;
+        right: -4px;
+        bottom: 0;
+        width: 8px;
+        z-index: 20;
+        padding: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        cursor: col-resize;
+        touch-action: none;
+    }
+
+    .sidebar-resizer::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 3px;
+        width: 2px;
+        background: transparent;
+        transition: background 120ms ease;
+    }
+
+    .sidebar-resizer:hover::after,
+    .sidebar-resizer:focus-visible::after,
+    .sidebar-resizer.active::after {
+        background: rgba(88, 166, 255, 0.72);
+    }
+
+    .sidebar-resizing {
+        cursor: col-resize;
+        user-select: none;
+    }
+
+    :global(body.webssh-sidebar-resizing) {
+        cursor: col-resize !important;
+        user-select: none !important;
     }
 
     .metrics-panel {
@@ -1378,6 +1509,12 @@
         border-right-color: #d0d7de;
     }
 
+    .light-workspace .sidebar-resizer:hover::after,
+    .light-workspace .sidebar-resizer:focus-visible::after,
+    .light-workspace .sidebar-resizer.active::after {
+        background: rgba(9, 105, 218, 0.72);
+    }
+
     .light-workspace .metrics-panel {
         border-left-color: #d0d7de;
     }
@@ -1520,10 +1657,15 @@
 
         .targets-panel {
             left: 0;
+            width: min(86vw, var(--webssh-sidebar-width, 246px));
         }
 
         .metrics-panel {
             right: 0;
+        }
+
+        .sidebar-resizer {
+            display: none;
         }
     }
 
