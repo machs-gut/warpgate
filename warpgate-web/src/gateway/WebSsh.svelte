@@ -268,6 +268,18 @@
         requestAnimationFrame(() => panes[sessionId]?.fit())
     }
 
+    async function openServerPicker() {
+        sidebarOpen = true
+        await tick()
+        requestAnimationFrame(() => {
+            const search = document.querySelector<HTMLInputElement>(
+                '.target-search input',
+            )
+            search?.focus()
+            search?.select()
+        })
+    }
+
     function addConnection(
         sessionId: string,
         target: TargetSnapshot,
@@ -321,6 +333,17 @@
         selectedTargetIds = selectedTargetIds.includes(targetId)
             ? selectedTargetIds.filter(id => id !== targetId)
             : [...selectedTargetIds, targetId]
+    }
+
+    async function activateTarget(target: TargetSnapshot) {
+        const connection = connectionForTarget(target.id)
+        if (connection) {
+            await switchSession(connection.sessionId)
+            return
+        }
+        if (pendingTargetIds.includes(target.id)) return
+        selectedTargetIds = selectedTargetIds.filter(id => id !== target.id)
+        await connectTarget(target)
     }
 
     async function connectSelected() {
@@ -482,9 +505,9 @@
             <button
                 type="button"
                 class="top-action"
-                title="Connect servers"
-                aria-label="Connect servers"
-                onclick={() => sidebarOpen = true}
+                title="Add server"
+                aria-label="Add server"
+                onclick={openServerPicker}
             >
                 <Fa icon={faPlus} />
             </button>
@@ -588,6 +611,8 @@
                                                         toggleSelected(target.id)
                                                     }
                                                 }}
+                                                ondblclick={() =>
+                                                    activateTarget(target)}
                                                 onkeydown={e => {
                                                     if (e.key !== 'Enter') return
                                                     if (connection) switchSession(connection.sessionId)
